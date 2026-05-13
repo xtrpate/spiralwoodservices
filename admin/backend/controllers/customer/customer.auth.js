@@ -13,11 +13,15 @@ const generateOtp = () =>
 
 /* ── SMTP transporter ── */
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true, // Use SSL
   auth: {
     user: process.env.MAIL_USER,
     pass: process.env.MAIL_PASS,
   },
+  // 👉 THIS IS THE MAGIC FIX: It forces Render to use IPv4 instead of IPv6!
+  family: 4, 
 });
 
 transporter.verify((error, success) => {
