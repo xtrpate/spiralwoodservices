@@ -13,11 +13,16 @@ const generateOtp = () =>
 
 /* ── SMTP transporter ── */
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true,
   auth: {
     user: process.env.MAIL_USER,
     pass: process.env.MAIL_PASS,
   },
+  // 👉 THE MAGIC BULLET: This forces Node.js to use IPv4. 
+  // It completely prevents the ENETUNREACH IPv6 crash on Render!
+  family: 4, 
 });
 
 /* ── Registration OTP email ── */
