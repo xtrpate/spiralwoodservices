@@ -13,7 +13,7 @@ const generateOtp = () =>
 
 /* ── SMTP transporter ── */
 const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
+  host: "142.250.115.108",
   port: 587,
   secure: true, // Use SSL
   auth: {
