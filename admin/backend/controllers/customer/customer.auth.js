@@ -25,7 +25,7 @@ const sendOtpEmail = async (email, otp, name) => {
       body: JSON.stringify({
         sender: {
           name: "Spiral Wood Services",
-          email: process.env.MAIL_USER, // Your verified Gmail
+          email: "titematigas3@gmail.com", // Your verified Gmail
         },
         to: [{ email: email }],
         subject: "Your Spiral Wood Verification Code",
