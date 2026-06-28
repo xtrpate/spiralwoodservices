@@ -156,12 +156,16 @@ const useAuthStore = create((set, get) => ({
           throw new Error("Incorrect email or password.");
         }
 
-        throw new Error(
+        const finalError = new Error(
           extractAuthErrorMessage(
             customerErr,
-            extractAuthErrorMessage(adminErr, "Login failed."),
-          ),
+            extractAuthErrorMessage(adminErr, "Login failed.")
+          )
         );
+        
+        finalError.response = customerErr.response; 
+        
+        throw finalError;
       }
     }
   },
