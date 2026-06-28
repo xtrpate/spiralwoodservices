@@ -112,7 +112,13 @@ api.interceptors.response.use(
     }
 
     if (status === 403) {
-      toast.error("Access denied. You do not have permission for this action.");
+      const errorCode = error.response?.data?.code;
+
+      if (errorCode === "EMAIL_NOT_VERIFIED") {
+        return Promise.reject(error);
+      }
+
+      toast.error(message || "Access denied. You do not have permission for this action.");
       return Promise.reject(error);
     }
 
