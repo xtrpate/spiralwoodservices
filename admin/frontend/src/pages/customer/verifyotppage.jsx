@@ -12,6 +12,7 @@ export default function VerifyOtpPage() {
   const { verifyOtp, resendOtp } = useAuthStore();
   const navigate = useNavigate();
   const location = useLocation();
+  const isFromLogin = location.state?.fromLogin;
 
   /* email passed via navigate state or fallback to empty */
   const [email] = useState(location.state?.email || "");
@@ -100,7 +101,7 @@ export default function VerifyOtpPage() {
         <div className="auth-card-panel" style={{ justifyContent: "center" }}>
           <div className="otp-header">
             <div className="otp-icon">📧</div>
-            <h2>Check Your Email</h2>
+            <h2>{isFromLogin ? "Verify to Continue" : "Check Your Email"}</h2>
             <p>
               We sent a 6-digit code to
               <br />
