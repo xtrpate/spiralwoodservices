@@ -56,6 +56,12 @@ export default function RegisterPage() {
     e.preventDefault();
     setError("");
 
+    const nameRegex = /^[a-zA-Z\s\-]+$/;
+
+    if (!nameRegex.test(form.first_name) || !nameRegex.test(form.last_name)){
+      return setError("Names must contain only letters")
+    }
+
     if (form.password !== form.confirm_password) {
       return setError("Passwords do not match.");
     }
