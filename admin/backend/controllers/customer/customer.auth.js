@@ -25,7 +25,7 @@ const sendOtpEmail = async (email, otp, name) => {
       body: JSON.stringify({
         sender: {
           name: "Spiral Wood Services",
-          email: "titematigas3@gmail.com", // Your verified Gmail
+          email: "titematigas3@gmail.com",
         },
         to: [{ email: email }],
         subject: "Your Spiral Wood Verification Code",
@@ -640,9 +640,25 @@ exports.login = async (req, res) => {
       return res.status(401).json({ message: "Invalid email or password." });
     }
 
+    // --- RECOVERY FLOW FOR UNVERIFIED USERS ---
     if (user.role === "customer" && !user.is_verified) {
+      // 1. Generate new OTP
+      const newOtp = generateOtp();
+      const expiry = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
+
+      // 2. Update DB
+      await db.query(
+        "UPDATE users SET otp_code = ?, otp_expires = ? WHERE id = ?",
+        [newOtp, expiry, user.id]
+      );
+
+      // 3. Send email
+      const firstName = user.name.split(" ")[0];
+      await sendOtpEmail(user.email, newOtp, firstName);
+
+      // 4. Return special code
       return res.status(403).json({
-        message: "Please verify your email before logging in.",
+        message: "Account not verified. A new verification code has been sent to your email.",
         code: "EMAIL_NOT_VERIFIED",
         email: user.email,
       });
