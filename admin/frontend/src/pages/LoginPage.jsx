@@ -52,6 +52,15 @@ export default function LoginPage() {
       const user = await login(form.email, form.password, rememberMe);
       navigate(redirectTo || getDefaultRouteForUser(user), { replace: true });
     } catch (err) {
+      const code = err?.response?.data?.code;
+      const emailFromServer = err?.response?.data?.email;
+
+      if (code === "EMAIL_NOT_VERIFIED") {
+        navigate("/verify-otp", {
+          state: { email: emailFromServer || form.email, fromLogin: true },
+        });
+        return; 
+      }
       setErrorMessage(
         err?.message ||
           err?.response?.data?.message ||
