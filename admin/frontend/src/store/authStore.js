@@ -112,61 +112,39 @@ const useAuthStore = create((set, get) => ({
     set({ user: nextUser });
   },
 
-  login: async (email, password, rememberMe = false) => {
+ login: async (email, password, rememberMe = false) => {
     const cleanEmail = String(email || "").trim();
 
     try {
+      // 1. ONE single request to a unified endpoint
+      // (Check your api.js baseURL, it usually adds /api automatically)
       const { data } = await api.post("/auth/login", {
         email: cleanEmail,
         password,
       });
 
+      // 2. Persist and Set State
       persistSession(data.token, data.user, rememberMe);
-
       set({
         user: data.user,
         token: data.token,
       });
 
+      // 3. Return the user (which includes their role!)
       return data.user;
-    } catch (adminErr) {
-      try {
-        const { data } = await api.post("/customer/auth/login", {
-          email: cleanEmail,
-          password,
-        });
 
-        persistSession(data.token, data.user, rememberMe);
+    } catch (err) {
+      // 4. Clean, unified error handling
+      const finalError = new Error(
+        extractAuthErrorMessage(err, "Incorrect email or password.")
+      );
 
-        set({
-          user: data.user,
-          token: data.token,
-        });
-
-        return data.user;
-      } catch (customerErr) {
-        const adminStatus = adminErr?.response?.status;
-        const customerStatus = customerErr?.response?.status;
-
-        const adminCredentialFail = adminStatus === 400 || adminStatus === 401;
-        const customerCredentialFail =
-          customerStatus === 400 || customerStatus === 401;
-
-        if (adminCredentialFail && customerCredentialFail) {
-          throw new Error("Incorrect email or password.");
-        }
-
-        const finalError = new Error(
-          extractAuthErrorMessage(
-            customerErr,
-            extractAuthErrorMessage(adminErr, "Login failed.")
-          )
-        );
-        
-        finalError.response = customerErr.response; 
-        
-        throw finalError;
+      // Attach response so LoginPage.jsx can read "EMAIL_NOT_VERIFIED"
+      if (err.response) {
+        finalError.response = err.response;
       }
+
+      throw finalError;
     }
   },
 

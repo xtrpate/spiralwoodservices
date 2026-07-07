@@ -609,6 +609,7 @@ exports.login = async (req, res) => {
   try {
     const normalizedEmail = String(email).trim().toLowerCase();
 
+    // 1. Query the unified table
     const [rows] = await db.query(
       `
       SELECT
@@ -617,6 +618,7 @@ exports.login = async (req, res) => {
         email,
         password,
         role,
+        staff_type, /* Added staff_type for the JWT */
         phone,
         address,
         profile_photo,
@@ -640,23 +642,21 @@ exports.login = async (req, res) => {
       return res.status(401).json({ message: "Invalid email or password." });
     }
 
-    // --- RECOVERY FLOW FOR UNVERIFIED USERS ---
+    // 2. ROLE-SPECIFIC CHECKS
+
+    // A. Customer Recovery Flow
     if (user.role === "customer" && !user.is_verified) {
-      // 1. Generate new OTP
       const newOtp = generateOtp();
       const expiry = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
 
-      // 2. Update DB
       await db.query(
         "UPDATE users SET otp_code = ?, otp_expires = ? WHERE id = ?",
         [newOtp, expiry, user.id]
       );
 
-      // 3. Send email
       const firstName = user.name.split(" ")[0];
       await sendOtpEmail(user.email, newOtp, firstName);
 
-      // 4. Return special code
       return res.status(403).json({
         message: "Account not verified. A new verification code has been sent to your email.",
         code: "EMAIL_NOT_VERIFIED",
@@ -664,6 +664,14 @@ exports.login = async (req, res) => {
       });
     }
 
+    // B. Staff Configuration Check
+    if (user.role === "staff" && !user.staff_type) {
+      return res.status(403).json({
+        message: "Staff account type is not configured yet. Contact admin.",
+      });
+    }
+
+    // 3. GLOBAL ACTIVE CHECK
     if (!user.is_active) {
       return res.status(403).json({
         message: "Your account has been deactivated. Please contact support.",
@@ -671,12 +679,14 @@ exports.login = async (req, res) => {
       });
     }
 
+    // 4. ISSUE UNIFIED JWT
     const token = jwt.sign(
       {
         id: user.id,
         name: user.name,
         email: user.email,
         role: user.role,
+        staff_type: user.staff_type || null, 
       },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN || "24h" },
@@ -693,6 +703,7 @@ exports.login = async (req, res) => {
         name: user.name,
         email: user.email,
         role: user.role,
+        staff_type: user.staff_type || null,
         phone: user.phone,
         address: user.address,
         profile_photo: user.profile_photo,
