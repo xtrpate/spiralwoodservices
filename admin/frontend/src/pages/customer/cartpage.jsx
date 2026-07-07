@@ -302,13 +302,21 @@ export default function CartPage() {
                   <div className="fm-cart-product-cell">
                     <div className="fm-cart-product-top">
                       <button
-                        type="button"
-                        className="fm-cart-remove-circle"
-                        onClick={() => removeItem(item.key)}
-                        aria-label={`Remove ${item.product_name}`}
-                      >
-                        <Trash2 size={14} />
-                      </button>
+  type="button"
+  className="fm-cart-remove-circle"
+  onClick={() => {
+    const itemName = item.base_blueprint_title || item.product_name || "this item";
+    
+    const confirmDelete = window.confirm(`Are you sure you want to remove "${itemName}" from your cart?`);
+  
+    if (confirmDelete) {
+      removeItem(item.key);
+    }
+  }}
+  aria-label={`Remove ${item.base_blueprint_title || item.product_name}`}
+>
+  <Trash2 size={14} />
+</button>
 
                       <input
                         type="checkbox"
