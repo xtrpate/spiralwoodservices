@@ -76,12 +76,4 @@ router.put(
   orderController.cancelOrder,
 );
 
-router.get("/cart", authenticate, requireCustomer, cartController.getCart);
-router.post(
-  "/cart/sync",
-  authenticate,
-  requireCustomer,
-  cartController.syncCart,
-);
-
 module.exports = router;
