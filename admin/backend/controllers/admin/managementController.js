@@ -346,10 +346,13 @@ exports.deleteUser = async (req, res) => {
         .status(400)
         .json({ message: "Cannot delete your own account." });
 
-    await pool.query("DELETE FROM users WHERE id = ? AND role != 'customer'", [
-      parseInt(req.params.id),
-    ]);
-    res.json({ message: "User deleted." });
+    // Soft delete: deactivate instead of hard-deleting, to preserve
+    // task/blueprint/receipt/etc. history tied to this user via FK.
+    await pool.query(
+      "UPDATE users SET is_active = 0 WHERE id = ? AND role != 'customer'",
+      [parseInt(req.params.id)],
+    );
+    res.json({ message: "User deactivated." });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import axios from "axios";
+import api from "../../services/api";
 import { Search, Package } from "lucide-react";
 
 export default function InventoryLookup() {
@@ -9,8 +9,8 @@ export default function InventoryLookup() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    axios
-      .get("/api/pos/products/all")
+    api
+      .get("/pos/products/all")
       .then((r) => {
         setProducts(Array.isArray(r.data) ? r.data : []);
         setLoading(false);

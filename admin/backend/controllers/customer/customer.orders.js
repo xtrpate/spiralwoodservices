@@ -5,14 +5,13 @@ const axios = require("axios");
 /* ── Get Settings (Payment Info) ── */
 exports.getSettings = async (req, res) => {
   try {
-    // ── FIXED: Switched to .query ──
     const [rows] = await db.query(
-      `SELECT setting_key, setting_value FROM settings
+      `SELECT setting_key, value FROM website_settings
        WHERE setting_key IN ('gcash_number','bank_account_name','bank_account_number')`,
     );
     const out = {};
     rows.forEach((r) => {
-      out[r.setting_key] = r.setting_value;
+      out[r.setting_key] = r.value;
     });
     res.json(out);
   } catch (err) {

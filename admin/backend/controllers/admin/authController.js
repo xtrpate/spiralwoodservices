@@ -1,6 +1,8 @@
 // controllers/authController.js (Unified Gateway for Admin, Staff, and Customers)
+// controllers/authController.js (Unified Gateway for Admin, Staff, and Customers)
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const nodemailer = require("nodemailer");
 const pool = require("../../config/db"); 
 require("dotenv").config();
 
@@ -8,26 +10,22 @@ require("dotenv").config();
 //   CUSTOMER OTP CONFIGURATION (For unverified logins)
 // ══════════════════════════════════════════════════════════════
 const OTP_EXPIRY_MINUTES = 15;
-const BREVO_URL = "https://api.brevo.com/v3/smtp/email";
 
 const generateOtp = () => Math.floor(100000 + Math.random() * 900000).toString();
 
+/* ── Nodemailer (Gmail) — same setup already used in customer.profile.js ── */
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: { user: process.env.MAIL_USER, pass: process.env.MAIL_PASS },
+});
+
 const sendOtpEmail = async (email, otp, name) => {
   try {
-    const response = await fetch(BREVO_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "api-key": process.env.BREVO_API_KEY,
-      },
-      body: JSON.stringify({
-        sender: {
-          name: "Spiral Wood Services",
-          email: "titematigas3@gmail.com", // Your verified sender email
-        },
-        to: [{ email: email }],
-        subject: "Your Spiral Wood Verification Code",
-        htmlContent: `
+    await transporter.sendMail({
+      from: `"Spiral Wood Services" <${process.env.MAIL_USER}>`,
+      to: email,
+      subject: "Your Spiral Wood Verification Code",
+      html: `
         <div style="font-family:sans-serif; text-align:center; padding:20px;">
           <h2>Spiral Wood Services</h2>
           <p>Hi ${name},</p>
@@ -35,11 +33,8 @@ const sendOtpEmail = async (email, otp, name) => {
           <h1 style="color:#8B4513; letter-spacing:5px;">${otp}</h1>
           <p>This code expires in ${OTP_EXPIRY_MINUTES} minutes.</p>
         </div>
-        `,
-      }),
+      `,
     });
-
-    if (!response.ok) throw new Error("EMAIL_FAILED");
   } catch (err) {
     console.error("Failed to send verification email.", err.message);
     throw new Error("EMAIL_FAILED");

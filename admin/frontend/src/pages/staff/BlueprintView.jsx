@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
-import axios from "axios";
+import api, { buildAssetUrl } from "../../services/api";
 import { Search, FileText, Eye, X } from "lucide-react";
-import { buildAssetUrl } from "../../services/api";
 
 export default function BlueprintView() {
   const [blueprints, setBlueprints] = useState([]);
@@ -12,8 +11,8 @@ export default function BlueprintView() {
   const fetchBlueprints = async (q = "") => {
     setLoading(true);
     try {
-      const res = await axios.get(
-        `/api/pos/blueprints${q ? `?q=${encodeURIComponent(q)}` : ""}`,
+      const res = await api.get(
+        `/pos/blueprints${q ? `?q=${encodeURIComponent(q)}` : ""}`,
       );
       setBlueprints(res.data);
     } catch {}
@@ -30,7 +29,7 @@ export default function BlueprintView() {
   }, [query]);
 
   const openBlueprint = async (id) => {
-    const res = await axios.get(`/api/pos/blueprints/${id}`);
+    const res = await api.get(`/pos/blueprints/${id}`);
     setSelected(res.data);
   };
 

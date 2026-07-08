@@ -1,6 +1,8 @@
 // controllers/customer/customer.auth.js
+// controllers/customer/customer.auth.js
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const nodemailer = require("nodemailer");
 const db = require("../../config/db"); // Uses the unified db config
 require("dotenv").config();
 
@@ -10,26 +12,20 @@ const RESET_OTP_EXPIRY_MINUTES = 15;
 const generateOtp = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
 
-/* ── Brevo API Configuration ── */
-const BREVO_URL = "https://api.brevo.com/v3/smtp/email";
-
+/* ── Nodemailer (Gmail) — same setup already used in customer.profile.js ── */
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: { user: process.env.MAIL_USER, pass: process.env.MAIL_PASS },
+});
 /* ── Registration OTP email (Brevo API) ── */
+/* ── Registration OTP email (Gmail via Nodemailer) ── */
 const sendOtpEmail = async (email, otp, name) => {
   try {
-    const response = await fetch(BREVO_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "api-key": process.env.BREVO_API_KEY,
-      },
-      body: JSON.stringify({
-        sender: {
-          name: "Spiral Wood Services",
-          email: "titematigas3@gmail.com",
-        },
-        to: [{ email: email }],
-        subject: "Your Spiral Wood Verification Code",
-        htmlContent: `
+    await transporter.sendMail({
+      from: `"Spiral Wood Services" <${process.env.MAIL_USER}>`,
+      to: email,
+      subject: "Your Spiral Wood Verification Code",
+      html: `
         <!DOCTYPE html>
         <html>
           <body style="margin:0;padding:0;background:#f4f6f9;font-family:'Segoe UI',sans-serif;">
@@ -95,17 +91,10 @@ const sendOtpEmail = async (email, otp, name) => {
             </table>
           </body>
         </html>
-        `,
-      }),
+      `,
     });
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      console.error("Brevo API Error:", errorData);
-      throw new Error("EMAIL_FAILED");
-    }
-
-    console.log("Brevo Success: Registration OTP Sent!");
+    console.log("Nodemailer Success: Registration OTP Sent!");
   } catch (err) {
     console.error("CRITICAL: Failed to send verification email.", err.message);
     throw new Error("EMAIL_FAILED");
@@ -113,22 +102,14 @@ const sendOtpEmail = async (email, otp, name) => {
 };
 
 /* ── Password reset OTP email (Brevo API) ── */
+/* ── Password reset OTP email (Gmail via Nodemailer) ── */
 const sendResetOtpEmail = async (email, otp, name) => {
   try {
-    const response = await fetch(BREVO_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "api-key": process.env.BREVO_API_KEY,
-      },
-      body: JSON.stringify({
-        sender: {
-          name: "Spiral Wood Services",
-          email: process.env.MAIL_USER, // Your verified Gmail
-        },
-        to: [{ email: email }],
-        subject: "Your Spiral Wood Password Reset Code",
-        htmlContent: `
+    await transporter.sendMail({
+      from: `"Spiral Wood Services" <${process.env.MAIL_USER}>`,
+      to: email,
+      subject: "Your Spiral Wood Password Reset Code",
+      html: `
         <!DOCTYPE html>
         <html>
           <body style="margin:0;padding:0;background:#f4f6f9;font-family:'Segoe UI',sans-serif;">
@@ -194,17 +175,10 @@ const sendResetOtpEmail = async (email, otp, name) => {
             </table>
           </body>
         </html>
-        `,
-      }),
+      `,
     });
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      console.error("Brevo API Error:", errorData);
-      throw new Error("RESET_EMAIL_FAILED");
-    }
-
-    console.log("Brevo Success: Password Reset OTP Sent!");
+    console.log("Nodemailer Success: Password Reset OTP Sent!");
   } catch (err) {
     console.error("CRITICAL: Failed to send password reset email.", err.message);
     throw new Error("RESET_EMAIL_FAILED");
