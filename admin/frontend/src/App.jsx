@@ -427,14 +427,6 @@ export default function App() {
                   }
                 />
                 <Route
-                  path="dashboard"
-                  element={
-                    <RequireStaffType allowedTypes={["indoor"]}>
-                      <POSDashboard />
-                    </RequireStaffType>
-                  }
-                />
-                <Route
                   path="products"
                   element={
                     <RequireStaffType allowedTypes={["cashier"]}>
