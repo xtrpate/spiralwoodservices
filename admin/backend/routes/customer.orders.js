@@ -3,6 +3,7 @@ const express = require("express");
 const router = express.Router();
 const multer = require("multer");
 const path = require("path");
+const { verifyFileSignature } = require("../utils/verifyFileSignature");
 const fs = require("fs");
 
 // Your existing auth middlewares
@@ -24,14 +25,41 @@ const storage = multer.diskStorage({
     cb(null, name);
   },
 });
-const upload = multer({
+
+const ALLOWED_PROOF_EXT = [".jpg", ".jpeg", ".jfif", ".png", ".gif", ".pdf"];
+
+const rawUpload = multer({
   storage,
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const allowed = /jpeg|jpg|png|gif|pdf/;
-    cb(null, allowed.test(file.mimetype));
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    if (ALLOWED_PROOF_EXT.includes(ext)) {
+      cb(null, true);
+      return;
+    }
+    const err = new Error("Only JPG, PNG, GIF, JFIF, and PDF files are allowed.");
+    err.status = 400;
+    cb(err);
   },
 });
+
+const upload = (req, res, next) => {
+  rawUpload.single("proof")(req, res, (err) => {
+    if (err) return next(err);
+
+    if (req.file) {
+      const ext = path.extname(req.file.originalname || "").toLowerCase();
+      if (!verifyFileSignature(req.file.path, ext)) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(400).json({
+          message: "Payment proof content does not match its file extension. Upload rejected.",
+        });
+      }
+    }
+
+    next();
+  });
+};
 
 /* ══════════════════════════════════════════════════════════════
    CUSTOMER ORDERS ROUTES
@@ -57,7 +85,7 @@ router.post(
   "/",
   authenticate,
   requireCustomer,
-  upload.single("proof"),
+  upload,
   orderController.createOrder,
 );
 

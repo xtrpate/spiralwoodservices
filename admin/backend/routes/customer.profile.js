@@ -6,6 +6,7 @@ const path = require("path");
 const fs = require("fs");
 const { authenticate, requireCustomer } = require("../middleware/auth");
 const profileController = require("../controllers/customer/customer.profile");
+const { verifyFileSignature } = require("../utils/verifyFileSignature");
 
 /* ── Multer — avatar upload ── */
 const avatarDir = path.join(__dirname, "../uploads/avatars");
@@ -19,11 +20,19 @@ const avatarStorage = multer.diskStorage({
   },
 });
 
+const ALLOWED_AVATAR_EXT = [".jpg", ".jpeg", ".jfif", ".png", ".gif", ".webp"];
+
 const uploadAvatar = multer({
   storage: avatarStorage,
   limits: { fileSize: 10 * 1024 * 1024 }, // 👉 BUMPED TO 10MB so you never hit this issue again!
-  fileFilter: (req, file, cb) =>
-    cb(null, /jpeg|jpg|png|gif|webp/.test(file.mimetype)),
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    if (ALLOWED_AVATAR_EXT.includes(ext)) {
+      cb(null, true);
+      return;
+    }
+    cb(new Error("Only JPG, PNG, GIF, JFIF, and WEBP images are allowed."));
+  },
 });
 
 // 👉 NEW: This wrapper forces the server to tell us EXACTLY what went wrong
@@ -36,6 +45,17 @@ const handleAvatarUpload = (req, res, next) => {
         .status(400)
         .json({ message: err.message || "Image upload failed." });
     }
+
+    if (req.file) {
+      const ext = path.extname(req.file.originalname || "").toLowerCase();
+      if (!verifyFileSignature(req.file.path, ext)) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(400).json({
+          message: "Avatar content does not match its file extension. Upload rejected.",
+        });
+      }
+    }
+
     next();
   });
 };

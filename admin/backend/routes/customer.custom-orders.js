@@ -3,6 +3,7 @@ const router = express.Router();
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const { verifyFileSignature } = require("../utils/verifyFileSignature");
 
 const { authenticate, requireCustomer } = require("../middleware/auth");
 const customOrderController = require("../controllers/customer/customer.customorders");
@@ -16,6 +17,19 @@ const customAssetsDir = path.join(__dirname, "../uploads/custom-request-assets")
 if (!fs.existsSync(proofsDir)) fs.mkdirSync(proofsDir, { recursive: true });
 if (!fs.existsSync(customAssetsDir)) fs.mkdirSync(customAssetsDir, { recursive: true });
 
+const ALLOWED_ASSET_EXT = [".jpg", ".jpeg", ".jfif", ".png", ".webp", ".pdf"];
+
+function fileFilter(req, file, cb) {
+  const ext = path.extname(file.originalname || "").toLowerCase();
+  if (ALLOWED_ASSET_EXT.includes(ext)) {
+    cb(null, true);
+    return;
+  }
+  const err = new Error("Only JPG, PNG, JFIF, WEBP, and PDF files are allowed.");
+  err.status = 400;
+  cb(err);
+}
+
 /* ──────────────────────────────────────────────────────────
    Down payment proof upload
 ────────────────────────────────────────────────────────── */
@@ -28,21 +42,27 @@ const proofStorage = multer.diskStorage({
   },
 });
 
-const proofUpload = multer({
+const proofUploadRaw = multer({
   storage: proofStorage,
   limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const allowed = new Set([
-      "image/jpeg",
-      "image/jpg",
-      "image/png",
-      "image/webp",
-      "application/pdf",
-    ]);
-
-    cb(null, allowed.has(String(file.mimetype || "").toLowerCase()));
-  },
+  fileFilter,
 });
+
+const proofUpload = (req, res, next) => {
+  proofUploadRaw.single("proof")(req, res, (err) => {
+    if (err) return next(err);
+    if (req.file) {
+      const ext = path.extname(req.file.originalname || "").toLowerCase();
+      if (!verifyFileSignature(req.file.path, ext)) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(400).json({
+          message: "Proof content does not match its file extension. Upload rejected.",
+        });
+      }
+    }
+    next();
+  });
+};
 
 /* ──────────────────────────────────────────────────────────
    Chat attachment upload
@@ -61,21 +81,27 @@ const assetStorage = multer.diskStorage({
   },
 });
 
-const assetUpload = multer({
+const assetUploadRaw = multer({
   storage: assetStorage,
   limits: { fileSize: 8 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const allowed = new Set([
-      "image/jpeg",
-      "image/jpg",
-      "image/png",
-      "image/webp",
-      "application/pdf",
-    ]);
-
-    cb(null, allowed.has(String(file.mimetype || "").toLowerCase()));
-  },
+  fileFilter,
 });
+
+const assetUpload = (req, res, next) => {
+  assetUploadRaw.array("attachments", 5)(req, res, (err) => {
+    if (err) return next(err);
+    for (const file of req.files || []) {
+      const ext = path.extname(file.originalname || "").toLowerCase();
+      if (!verifyFileSignature(file.path, ext)) {
+        fs.unlink(file.path, () => {});
+        return res.status(400).json({
+          message: "One of the attachments does not match its file extension. Upload rejected.",
+        });
+      }
+    }
+    next();
+  });
+};
 
 /* ══════════════════════════════════════════════════════════════
    CUSTOMER CUSTOM ORDERS ROUTES
@@ -127,7 +153,7 @@ router.post(
   "/:id/down-payment",
   authenticate,
   requireCustomer,
-  proofUpload.single("proof"),
+  proofUpload,
   customOrderController.submitDownPayment,
 );
 
@@ -135,7 +161,7 @@ router.post(
   "/:id/messages",
   authenticate,
   requireCustomer,
-  assetUpload.array("attachments", 5),
+  assetUpload,
   customOrderController.postCustomOrderMessage,
 );
 

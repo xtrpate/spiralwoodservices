@@ -1,5 +1,7 @@
 // controllers/customer/customer.warranty.js
+// controllers/customer/customer.warranty.js
 const db = require("../../config/db");
+const { signUploadPath } = require("../../utils/signedUrl");
 
 /* ── Helper: split stored proof_url into separate frontend fields ── */
 const splitStoredProofs = (value) => {
@@ -100,9 +102,9 @@ const getClaims = async (req, res) => {
         description: row.reason,
         admin_note: row.admin_note,
         status: row.status,
-        photo_url,
-        proof_url,
-        replacement_receipt: row.replacement_receipt,
+        photo_url: signUploadPath(photo_url),
+        proof_url: signUploadPath(proof_url),
+        replacement_receipt: signUploadPath(row.replacement_receipt),
         warranty_expiry: row.warranty_expiry,
         fulfilled_at: row.fulfilled_at,
         created_at: row.created_at,

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import ReCAPTCHA from "react-google-recaptcha";
 import "./authpages.css";
 import useAuthStore from "../../store/authStore";
 
@@ -10,14 +11,21 @@ export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState("");
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
+
+    if (!captchaToken) {
+      setError("Please complete the CAPTCHA verification.");
+      return;
+    }
+
     setLoading(true);
 
     try {
-      await forgotPassword(email);
+      await forgotPassword(email, captchaToken);
       navigate("/reset-password", {
         state: {
           email,
@@ -70,7 +78,15 @@ export default function ForgotPasswordPage() {
               </div>
             </div>
 
-            <button type="submit" className="btn-auth" disabled={loading}>
+            <div style={{ margin: "14px 0" }}>
+              <ReCAPTCHA
+                sitekey={process.env.REACT_APP_RECAPTCHA_SITE_KEY}
+                onChange={(token) => setCaptchaToken(token || "")}
+                onExpired={() => setCaptchaToken("")}
+              />
+            </div>
+
+            <button type="submit" className="btn-auth" disabled={loading || !captchaToken}>
               {loading ? "Sending code..." : "Send Reset Code"}
             </button>
           </form>

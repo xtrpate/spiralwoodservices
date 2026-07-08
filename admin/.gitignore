@@ -25,4 +25,10 @@ yarn-error.log*
 
 # OS generated files
 .DS_Store
-Thumbs.db
+Thumbs.dbbackend/backups/
+backend/uploads/
+defaultdb4_fixed.sql
+.env
+backend/.env
+frontend/.env
+backend/backups/*.sql

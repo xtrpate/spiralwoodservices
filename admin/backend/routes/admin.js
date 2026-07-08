@@ -3,7 +3,7 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
-
+const { verifyFileSignature } = require("../utils/verifyFileSignature");
 const router = express.Router();
 
 const { authenticate, authorize } = require("../middleware/auth");
@@ -49,16 +49,36 @@ const allowedReplacementMimeTypes = new Set([
   "application/pdf",
 ]);
 
-const replacementUpload = multer({
+const replacementUploadRaw = multer({
   storage: replacementStorage,
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (allowedReplacementMimeTypes.has(file.mimetype)) {
       return cb(null, true);
     }
-    cb(new Error("Only JPG, PNG, WEBP, and PDF files are allowed."));
+    const err = new Error("Only JPG, PNG, WEBP, and PDF files are allowed.");
+    err.status = 400;
+    cb(err);
   },
 });
+
+const replacementUpload = (req, res, next) => {
+  replacementUploadRaw.single("replacement_receipt")(req, res, (err) => {
+    if (err) return next(err);
+    if (req.file) {
+      const ext = path.extname(req.file.originalname || "").toLowerCase();
+      if (!verifyFileSignature(req.file.path, ext)) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(400).json({
+          message: "Replacement receipt content does not match its file extension.",
+        });
+      }
+    }
+    next();
+  });
+};
+
+
 
 const customDiscussionDir = path.join(
   __dirname,
@@ -86,21 +106,43 @@ const allowedDiscussionMimeTypes = new Set([
   "application/pdf",
 ]);
 
-const customDiscussionUpload = multer({
+const customDiscussionUploadRaw = multer({
   storage: customDiscussionStorage,
   limits: { fileSize: 8 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (allowedDiscussionMimeTypes.has(file.mimetype)) {
       return cb(null, true);
     }
-    cb(new Error("Only JPG, PNG, WEBP, and PDF files are allowed."));
+    const err = new Error("Only JPG, PNG, WEBP, and PDF files are allowed.");
+    err.status = 400;
+    cb(err);
   },
 });
+
+
+
+const customDiscussionUpload = (req, res, next) => {
+  customDiscussionUploadRaw.array("attachments", 5)(req, res, (err) => {
+    if (err) return next(err);
+    for (const file of req.files || []) {
+      const ext = path.extname(file.originalname || "").toLowerCase();
+      if (!verifyFileSignature(file.path, ext)) {
+        fs.unlink(file.path, () => {});
+        return res.status(400).json({
+          message: "One of the attachments does not match its file extension.",
+        });
+      }
+    }
+    next();
+  });
+};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // AUTH
 // ══════════════════════════════════════════════════════════════════════════════
-router.post("/auth/login", auth.login);
+const { loginLimiter } = require("../middleware/authRateLimit");
+// ...
+router.post("/auth/login", loginLimiter, auth.login);
 router.get("/auth/me", authenticate, auth.getMe);
 router.put("/auth/profile", authenticate, auth.updateProfile);
 router.put("/auth/change-password", authenticate, auth.changePassword);
@@ -217,7 +259,7 @@ router.get("/orders/:id/discussion", adminStaff, orders.getOrderDiscussion);
 router.post(
   "/orders/:id/discussion",
   adminStaff,
-  customDiscussionUpload.array("attachments", 5),
+  customDiscussionUpload,
   orders.postOrderDiscussionMessage,
 );
 
@@ -256,10 +298,9 @@ router.patch(
 router.patch(
   "/warranty/:id/fulfill",
   adminOnly,
-  replacementUpload.single("replacement_receipt"),
+  replacementUpload,
   warrantyController.fulfillClaim,
 );
-
 // ══════════════════════════════════════════════════════════════════════════════
 // CUSTOMER ACCOUNT MANAGEMENT
 // ══════════════════════════════════════════════════════════════════════════════

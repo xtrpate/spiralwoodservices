@@ -2,10 +2,11 @@
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const { verifyFileSignature } = require('./../utils/verifyFileSignature');
 
-const ALLOWED_IMAGES = ['.jpg', '.jpeg', '.png', '.webp'];
-const ALLOWED_DOCS = ['.pdf', '.jpg', '.jpeg', '.png'];
-const ALLOWED_BLUEPRINTS = ['.pdf', '.png', '.jpg', '.jpeg', '.svg'];
+const ALLOWED_IMAGES = ['.jpg', '.jpeg', '.jfif', '.png', '.webp'];
+const ALLOWED_DOCS = ['.pdf', '.jpg', '.jpeg', '.jfif', '.png'];
+const ALLOWED_BLUEPRINTS = ['.pdf', '.png', '.jpg', '.jpeg', '.jfif', '.svg'];
 
 const MAX_MB = parseInt(process.env.MAX_FILE_SIZE_MB || '15', 10);
 
@@ -39,39 +40,79 @@ function fileFilter(allowed, label = 'File') {
       return;
     }
 
-    cb(
-      new Error(
-        `${label} type not allowed. Allowed: ${allowed.join(', ')}`
-      )
+    const err = new Error(
+      `${label} type not allowed. Allowed: ${allowed.join(', ')}`
     );
+    err.status = 400;
+    cb(err);
+  };
+}
+
+// After multer saves the file, verify its actual content (magic bytes)
+// matches the extension it claims to be — not just the extension/mimetype
+// the client sent. Deletes and rejects the file if it's a mismatch.
+function withSignatureCheck(multerMiddleware, label = 'File') {
+  return (req, res, next) => {
+    multerMiddleware(req, res, (err) => {
+      if (err) return next(err);
+
+      const files = [];
+      if (req.file) files.push(req.file);
+      if (req.files) {
+        const list = Array.isArray(req.files)
+          ? req.files
+          : Object.values(req.files).flat();
+        files.push(...list);
+      }
+
+      for (const file of files) {
+        const ext = path.extname(file.originalname || '').toLowerCase();
+        const isValid = verifyFileSignature(file.path, ext);
+        if (!isValid) {
+          fs.unlink(file.path, () => {});
+          return res.status(400).json({
+            message: `${label} content does not match its file extension. Upload rejected.`,
+          });
+        }
+      }
+
+      next();
+    });
   };
 }
 
 // ── Specific uploaders ────────────────────────────────────────────────────────
-exports.uploadProductImage = multer({
-  storage: diskStorage('products'),
-  fileFilter: fileFilter(ALLOWED_IMAGES, 'Product image'),
-  limits: { fileSize: MAX_MB * 1024 * 1024 },
-}).single('image');
+exports.uploadProductImage = withSignatureCheck(
+  multer({
+    storage: diskStorage('products'),
+    fileFilter: fileFilter(ALLOWED_IMAGES, 'Product image'),
+    limits: { fileSize: MAX_MB * 1024 * 1024 },
+  }).single('image'),
+  'Product image',
+);
 
-const blueprintUpload = multer({
-  storage: diskStorage('blueprints'),
-  fileFilter: fileFilter(ALLOWED_BLUEPRINTS, 'Blueprint file'),
-  limits: { fileSize: MAX_MB * 1024 * 1024 },
-}).fields([
-  { name: 'file', maxCount: 1 },
-  { name: 'reference_file', maxCount: 1 },
+const blueprintUpload = withSignatureCheck(
+  multer({
+    storage: diskStorage('blueprints'),
+    fileFilter: fileFilter(ALLOWED_BLUEPRINTS, 'Blueprint file'),
+    limits: { fileSize: MAX_MB * 1024 * 1024 },
+  }).fields([
+    { name: 'file', maxCount: 1 },
+    { name: 'reference_file', maxCount: 1 },
 
-  { name: 'front_reference', maxCount: 1 },
-  { name: 'back_reference', maxCount: 1 },
-  { name: 'left_reference', maxCount: 1 },
-  { name: 'right_reference', maxCount: 1 },
-  { name: 'top_reference', maxCount: 1 },
-]);
+    { name: 'front_reference', maxCount: 1 },
+    { name: 'back_reference', maxCount: 1 },
+    { name: 'left_reference', maxCount: 1 },
+    { name: 'right_reference', maxCount: 1 },
+    { name: 'top_reference', maxCount: 1 },
+  ]),
+  'Blueprint file',
+);
 
 exports.uploadBlueprintFile = (req, res, next) => {
   blueprintUpload(req, res, (err) => {
     if (err) return next(err);
+    if (res.headersSent) return; // signature check already rejected + responded
 
     req.referenceFiles = {
       front:
@@ -95,26 +136,38 @@ exports.uploadBlueprintFile = (req, res, next) => {
   });
 };
 
-exports.uploadPaymentProof = multer({
-  storage: diskStorage('payments'),
-  fileFilter: fileFilter(ALLOWED_IMAGES, 'Payment proof'),
-  limits: { fileSize: MAX_MB * 1024 * 1024 },
-}).single('proof');
+exports.uploadPaymentProof = withSignatureCheck(
+  multer({
+    storage: diskStorage('payments'),
+    fileFilter: fileFilter(ALLOWED_IMAGES, 'Payment proof'),
+    limits: { fileSize: MAX_MB * 1024 * 1024 },
+  }).single('proof'),
+  'Payment proof',
+);
 
-exports.uploadWarrantyProof = multer({
-  storage: diskStorage('warranty'),
-  fileFilter: fileFilter(ALLOWED_DOCS, 'Warranty proof'),
-  limits: { fileSize: MAX_MB * 1024 * 1024 },
-}).single('proof');
+exports.uploadWarrantyProof = withSignatureCheck(
+  multer({
+    storage: diskStorage('warranty'),
+    fileFilter: fileFilter(ALLOWED_DOCS, 'Warranty proof'),
+    limits: { fileSize: MAX_MB * 1024 * 1024 },
+  }).single('proof'),
+  'Warranty proof',
+);
 
-exports.uploadDeliveryReceipt = multer({
-  storage: diskStorage('deliveries'),
-  fileFilter: fileFilter(ALLOWED_IMAGES, 'Delivery receipt'),
-  limits: { fileSize: MAX_MB * 1024 * 1024 },
-}).single('receipt');
+exports.uploadDeliveryReceipt = withSignatureCheck(
+  multer({
+    storage: diskStorage('deliveries'),
+    fileFilter: fileFilter(ALLOWED_IMAGES, 'Delivery receipt'),
+    limits: { fileSize: MAX_MB * 1024 * 1024 },
+  }).single('receipt'),
+  'Delivery receipt',
+);
 
-exports.uploadSiteLogo = multer({
-  storage: diskStorage('settings'),
-  fileFilter: fileFilter(ALLOWED_IMAGES, 'Site logo'),
-  limits: { fileSize: 2 * 1024 * 1024 },
-}).single('logo');
+exports.uploadSiteLogo = withSignatureCheck(
+  multer({
+    storage: diskStorage('settings'),
+    fileFilter: fileFilter(ALLOWED_IMAGES, 'Site logo'),
+    limits: { fileSize: 2 * 1024 * 1024 },
+  }).single('logo'),
+  'Site logo',
+);

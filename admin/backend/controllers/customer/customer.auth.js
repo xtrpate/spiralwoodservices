@@ -4,6 +4,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
 const db = require("../../config/db"); // Uses the unified db config
+const { verifyRecaptcha } = require("../../utils/verifyRecaptcha");
 require("dotenv").config();
 
 const OTP_EXPIRY_MINUTES = 15;
@@ -193,7 +194,7 @@ exports.register = async (req, res) => {
   console.log("=== INCOMING REGISTRATION DATA ===");
   console.log(req.body);
 
-  const { first_name, last_name, email, phone, address, password } = req.body;
+  const { first_name, last_name, email, phone, address, password, recaptcha_token } = req.body;
 
   if (!first_name || !last_name || !email || !phone || !address || !password) {
     console.log("Validation Failed: Missing a field.");
@@ -204,6 +205,11 @@ exports.register = async (req, res) => {
     return res
       .status(400)
       .json({ message: "Password must be at least 8 characters." });
+  }
+
+  const isHuman = await verifyRecaptcha(recaptcha_token);
+  if (!isHuman) {
+    return res.status(400).json({ message: "Please complete the CAPTCHA verification." });
   }
 
   try {
@@ -403,11 +409,21 @@ exports.resendOtp = async (req, res) => {
 };
 
 exports.forgotPassword = async (req, res) => {
-  const { email } = req.body;
+  const { email, recaptcha_token } = req.body;
 
   if (!email) {
     return res.status(400).json({ message: "Email is required." });
   }
+
+  const isHuman = await verifyRecaptcha(recaptcha_token);
+  if (!isHuman) {
+    return res.status(400).json({ message: "Please complete the CAPTCHA verification." });
+  }
+
+  // Same generic message for every outcome below — this prevents attackers
+  // from using this endpoint to check which emails are registered.
+  const GENERIC_MESSAGE =
+    "If an account with that email exists, we've sent a 6-digit reset code.";
 
   try {
     const normalizedEmail = String(email).trim().toLowerCase();
@@ -422,24 +438,16 @@ exports.forgotPassword = async (req, res) => {
       [normalizedEmail],
     );
 
+    // No account, unverified, or inactive: silently do nothing, but still
+    // respond with the same generic message as a successful send.
     if (rows.length === 0) {
-      return res.status(404).json({
-        message: "No account found with that email address.",
-      });
+      return res.json({ message: GENERIC_MESSAGE });
     }
 
     const user = rows[0];
 
-    if (!user.is_verified) {
-      return res.status(403).json({
-        message: "This email is not yet verified. Please verify your account first.",
-      });
-    }
-
-    if (!user.is_active) {
-      return res.status(403).json({
-        message: "This account is inactive. Please contact support.",
-      });
+    if (!user.is_verified || !user.is_active) {
+      return res.json({ message: GENERIC_MESSAGE });
     }
 
     const resetOtp = generateOtp();
@@ -459,21 +467,13 @@ exports.forgotPassword = async (req, res) => {
     const firstName = user.name ? user.name.split(" ")[0] : "Customer";
     await sendResetOtpEmail(normalizedEmail, resetOtp, firstName);
 
-    return res.json({
-      message: "We sent a 6-digit password reset code to your email.",
-    });
+    return res.json({ message: GENERIC_MESSAGE });
   } catch (err) {
     console.error("[forgot-password]", err);
-
-    if (err.message === "RESET_EMAIL_FAILED") {
-      return res.status(500).json({
-        message: "We couldn't send the reset code email. Please try again.",
-      });
-    }
-
+    // Even on internal errors, avoid leaking details — but this one stays
+    // a real 500 since it's a server problem, not an enumeration signal.
     return res.status(500).json({
-      message: "Server error",
-      error: err.message,
+      message: "Server error. Please try again.",
     });
   }
 };

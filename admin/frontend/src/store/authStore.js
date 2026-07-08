@@ -112,7 +112,7 @@ const useAuthStore = create((set, get) => ({
     set({ user: nextUser });
   },
 
- login: async (email, password, rememberMe = false) => {
+ login: async (email, password, rememberMe = false, recaptchaToken = "") => {
     const cleanEmail = String(email || "").trim();
 
     try {
@@ -121,6 +121,7 @@ const useAuthStore = create((set, get) => ({
       const { data } = await api.post("/auth/login", {
         email: cleanEmail,
         password,
+        recaptcha_token: recaptchaToken,
       });
 
       // 2. Persist and Set State
@@ -166,9 +167,10 @@ const useAuthStore = create((set, get) => ({
     return data;
   },
 
-  forgotPassword: async (email) => {
+  forgotPassword: async (email, recaptchaToken = "") => {
     const { data } = await api.post("/customer/auth/forgot-password", {
       email: String(email || "").trim(),
+      recaptcha_token: recaptchaToken,
     });
     return data;
   },

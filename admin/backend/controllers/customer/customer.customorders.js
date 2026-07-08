@@ -1,6 +1,8 @@
 const db = require("../../config/db");
 const fs = require("fs");
 const path = require("path");
+const { authenticate, requireCustomer } = require("../../middleware/auth");
+const { signUploadPath } = require("../../utils/signedUrl");
 
 const customRequestAssetsDir = path.join(
   __dirname,
@@ -282,7 +284,7 @@ const getCustomOrderDiscussion = async (conn, orderId) => {
     order_item_id: row.order_item_id || null,
     message_id: row.message_id || null,
     uploaded_by: row.uploaded_by || null,
-    file_url: toTrimmedStringOrNull(row.file_url),
+    file_url: signUploadPath(toTrimmedStringOrNull(row.file_url)),
     file_name: toTrimmedStringOrNull(row.file_name),
     mime_type: toTrimmedStringOrNull(row.mime_type),
     file_size: Number(row.file_size || 0) || null,
@@ -729,7 +731,7 @@ exports.getCustomOrderById = async (req, res) => {
       order_id: row.order_id,
       amount: roundMoney(row.amount || 0),
       payment_method: String(row.payment_method || "").trim(),
-      proof_url: toTrimmedStringOrNull(row.proof_url),
+      proof_url: signUploadPath(toTrimmedStringOrNull(row.proof_url)),
       status: normalize(row.status),
       notes: toTrimmedStringOrNull(row.notes),
       verified_by: row.verified_by || null,

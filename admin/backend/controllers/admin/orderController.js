@@ -1,5 +1,7 @@
 // controllers/orderController.js – Order Management (Admin) [SCHEMA-CORRECTED]
+// controllers/orderController.js – Order Management (Admin) [SCHEMA-CORRECTED]
 const pool = require("../../config/db");
+const { signUploadPath } = require("../../utils/signedUrl");
 
 const normalize = (value) =>
   String(value || "")
@@ -653,13 +655,17 @@ exports.getOne = async (req, res) => {
       [orderId],
     );
 
+    payments.forEach((p) => {
+      if (p.proof_url) p.proof_url = signUploadPath(p.proof_url);
+    });
+
     if (order.payment_proof && payments.length === 0) {
       payments.push({
         id: `initial_${order.id}`,
         order_id: order.id,
         amount: order.total_amount,
         payment_method: order.payment_method,
-        proof_url: order.payment_proof,
+        proof_url: signUploadPath(order.payment_proof),
         status: order.payment_status === "paid" ? "verified" : "pending",
         notes: "Initial order placement proof.",
         created_at: order.created_at,
@@ -671,6 +677,10 @@ exports.getOne = async (req, res) => {
       `SELECT * FROM deliveries WHERE order_id = ? LIMIT 1`,
       [orderId],
     );
+
+    if (delivery?.signed_receipt) {
+      delivery.signed_receipt = signUploadPath(delivery.signed_receipt);
+    }
 
     const [[contract]] = await pool.query(
       `SELECT * FROM contracts WHERE order_id = ? LIMIT 1`,
@@ -748,6 +758,10 @@ exports.getOne = async (req, res) => {
       paymentStatusDisplay = "pending";
     } else if (hasRejectedPayment && paymentStatusDisplay !== "paid") {
       paymentStatusDisplay = "rejected";
+    }
+
+    if (order.payment_proof) {
+      order.payment_proof = signUploadPath(order.payment_proof);
     }
 
     res.json({
@@ -1824,7 +1838,7 @@ exports.getOrderDiscussion = async (req, res) => {
       order_item_id: row.order_item_id || null,
       message_id: row.message_id || null,
       uploaded_by: row.uploaded_by || null,
-      file_url: adminSafeTextOrNull(row.file_url),
+      file_url: signUploadPath(adminSafeTextOrNull(row.file_url)),
       file_name: adminSafeTextOrNull(row.file_name),
       mime_type: adminSafeTextOrNull(row.mime_type),
       file_size: Number(row.file_size || 0) || null,

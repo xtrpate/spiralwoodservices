@@ -1,5 +1,6 @@
 // controllers/staff/pos.deliveries.js
 const db = require("../../config/db");
+const { signUploadPath } = require("../../utils/signedUrl");
 
 const DELIVERY_STATUSES = ["scheduled", "in_transit", "delivered", "failed"];
 
@@ -200,6 +201,9 @@ exports.getDeliveries = async (req, res) => {
     sql += ` ORDER BY d.updated_at DESC, d.id DESC LIMIT 200`;
 
     const [rows] = await db.query(sql, params);
+    rows.forEach((row) => {
+      if (row.signed_receipt) row.signed_receipt = signUploadPath(row.signed_receipt);
+    });
     res.json(rows);
   } catch (err) {
     console.error("GET /api/pos/deliveries error:", err);
@@ -350,6 +354,10 @@ exports.createDelivery = async (req, res) => {
       `,
       [result.insertId],
     );
+
+    if (delivery?.signed_receipt) {
+      delivery.signed_receipt = signUploadPath(delivery.signed_receipt);
+    }
 
     res.status(201).json({
       message: "Delivery scheduled successfully",
@@ -747,6 +755,10 @@ exports.updateDeliveryStatus = async (req, res) => {
       message = "Signed receipt uploaded successfully";
     } else if (requestedStatus !== currentStatus) {
       message = "Delivery status updated successfully";
+    }
+
+    if (updated?.signed_receipt) {
+      updated.signed_receipt = signUploadPath(updated.signed_receipt);
     }
 
     res.json({

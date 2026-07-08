@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
+import ReCAPTCHA from "react-google-recaptcha";
 
 import useAuthStore from "../store/authStore";
 import "./customer/authpages.css";
@@ -33,6 +34,7 @@ export default function LoginPage() {
   );
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+  const [captchaToken, setCaptchaToken] = useState("");
 
   const setField = (key, value) => {
     if (errorMessage) setErrorMessage("");
@@ -42,6 +44,12 @@ export default function LoginPage() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setErrorMessage("");
+
+    if (!captchaToken) {
+      setErrorMessage("Please complete the CAPTCHA verification.");
+      return;
+    }
+
     setLoading(true);
 
     const redirectTo = location.state?.from?.pathname
@@ -49,7 +57,7 @@ export default function LoginPage() {
       : location.state?.redirectTo || null;
 
     try {
-      const user = await login(form.email, form.password, rememberMe);
+      const user = await login(form.email, form.password, rememberMe, captchaToken);
       navigate(redirectTo || getDefaultRouteForUser(user), { replace: true });
     } catch (err) {
       const code = err?.response?.data?.code;
@@ -170,7 +178,19 @@ export default function LoginPage() {
               </label>
             </div>
 
-            <button type="submit" className="btn-auth" disabled={loading}>
+            <div style={{ margin: "14px 0" }}>
+              <ReCAPTCHA
+                sitekey={process.env.REACT_APP_RECAPTCHA_SITE_KEY}
+                onChange={(token) => setCaptchaToken(token || "")}
+                onExpired={() => setCaptchaToken("")}
+              />
+            </div>
+
+            <button
+              type="submit"
+              className="btn-auth"
+              disabled={loading || !captchaToken}
+            >
               {loading ? "Logging in..." : "Log in"}
             </button>
 

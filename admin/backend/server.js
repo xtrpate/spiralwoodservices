@@ -56,13 +56,49 @@ app.use(
     path.isAbsolute(backupDir) ? backupDir : path.join(__dirname, backupDir),
   ),
 );
+const { verifyUploadSignature } = require("./utils/signedUrl");
+
+const SENSITIVE_UPLOAD_PREFIXES = [
+  "/proofs/",
+  "/warranty/",
+  "/warranty-replacements/",
+  "/deliveries/",
+  "/custom-request-assets/",
+];
+
+function protectSensitiveUploads(req, res, next) {
+  const isSensitive = SENSITIVE_UPLOAD_PREFIXES.some((prefix) =>
+    req.path.startsWith(prefix),
+  );
+
+  if (!isSensitive) return next(); // product photos, site logo stay public
+
+  const { exp, sig } = req.query;
+  if (verifyUploadSignature(req.path, exp, sig)) {
+    return next();
+  }
+
+  return res.status(403).json({
+    message: "Access denied. This file requires a valid link.",
+  });
+}
+
 app.use(
   "/uploads",
+  protectSensitiveUploads,
   express.static(
     path.isAbsolute(uploadDir) ? uploadDir : path.join(__dirname, uploadDir),
+    {
+      setHeaders: (res, filePath) => {
+        const ext = path.extname(filePath).toLowerCase();
+        if (ext === ".jfif" || ext === ".jpg" || ext === ".jpeg") {
+          res.setHeader("Content-Type", "image/jpeg");
+        }
+        res.setHeader("Content-Disposition", "inline");
+      },
+    },
   ),
 );
-
 app.use("/api/public", require("./routes/public"));
 
 app.use("/api", adminRoutes);

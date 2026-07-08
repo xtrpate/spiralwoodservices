@@ -2,7 +2,7 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
-
+const { verifyFileSignature } = require("../utils/verifyFileSignature");
 const router = express.Router();
 
 const {
@@ -33,24 +33,24 @@ const receiptStorage = multer.diskStorage({
   },
 });
 
+const ALLOWED_RECEIPT_EXT = [".jpg", ".jpeg", ".jfif", ".png", ".webp", ".pdf"];
+
 const receiptUpload = multer({
   storage: receiptStorage,
   limits: {
     fileSize: 5 * 1024 * 1024,
   },
   fileFilter: (_req, file, cb) => {
-    const mime = String(file.mimetype || "").toLowerCase();
-    const allowed = mime.startsWith("image/") || mime === "application/pdf";
-
-    if (!allowed) {
-      return cb(
-        new Error(
-          "Only image or PDF files are allowed for signed receipt upload.",
-        ),
-      );
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    if (ALLOWED_RECEIPT_EXT.includes(ext)) {
+      cb(null, true);
+      return;
     }
-
-    cb(null, true);
+    cb(
+      new Error(
+        "Only image or PDF files are allowed for signed receipt upload.",
+      ),
+    );
   },
 });
 
@@ -61,6 +61,17 @@ const handleReceiptUpload = (req, res, next) => {
         message: err.message || "Invalid receipt upload.",
       });
     }
+
+    if (req.file) {
+      const ext = path.extname(req.file.originalname || "").toLowerCase();
+      if (!verifyFileSignature(req.file.path, ext)) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(400).json({
+          message: "Receipt content does not match its file extension. Upload rejected.",
+        });
+      }
+    }
+
     next();
   });
 };

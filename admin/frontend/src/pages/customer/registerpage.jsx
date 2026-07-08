@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import ReCAPTCHA from "react-google-recaptcha";
 
 import "./authpages.css";
 import useAuthStore from "../../store/authStore";
@@ -25,6 +26,7 @@ export default function RegisterPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [registeredEmail, setRegisteredEmail] = useState("");
+  const [captchaToken, setCaptchaToken] = useState("");
 
   const [otp, setOtp] = useState(["", "", "", "", "", ""]);
   const [otpError, setOtpError] = useState("");
@@ -74,6 +76,10 @@ export default function RegisterPage() {
       return setError("Please agree to the Terms of Service and Privacy Policy to continue.");
     }
 
+    if (!captchaToken) {
+      return setError("Please complete the CAPTCHA verification.");
+    }
+
     setLoading(true);
     try {
       await register({
@@ -83,6 +89,7 @@ export default function RegisterPage() {
         phone: form.phone,
         address: form.address,
         password: form.password,
+        recaptcha_token: captchaToken,
       });
 
       setRegisteredEmail(form.email);
@@ -513,10 +520,18 @@ export default function RegisterPage() {
               </label>
             </div>
 
+            <div style={{ margin: "14px 0" }}>
+              <ReCAPTCHA
+                sitekey={process.env.REACT_APP_RECAPTCHA_SITE_KEY}
+                onChange={(token) => setCaptchaToken(token || "")}
+                onExpired={() => setCaptchaToken("")}
+              />
+            </div>
+
             <button
               type="submit"
-              className={`btn-auth ${!form.agreed || loading ? "btn-auth-disabled" : ""}`}
-              disabled={loading || !form.agreed}
+              className={`btn-auth ${!form.agreed || !captchaToken || loading ? "btn-auth-disabled" : ""}`}
+              disabled={loading || !form.agreed || !captchaToken}
               title={!form.agreed ? "Please agree to the Terms of Service and Privacy Policy first." : ""}
             >
               {loading ? "Creating account..." : "Create Account"}
