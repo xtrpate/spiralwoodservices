@@ -1124,6 +1124,11 @@ exports.updateStatus = async (req, res) => {
 
     await conn.commit();
 
+    req.auditRecord = {
+      id: parseInt(req.params.id),
+      old: { status: currentStatus },
+      new: { status: nextStatus },
+    };
     res.json({
       message: `Order status updated to "${nextStatus}".`,
     });
@@ -1279,6 +1284,10 @@ exports.verifyPayment = async (req, res) => {
 
     await conn.commit();
 
+    req.auditRecord = {
+      id: parseInt(req.params.id),
+      new: { payment_id, action: normalizedAction, payment_status: nextPaymentStatus },
+    };
     res.json({
       message: `Payment ${normalizedAction}.`,
       payment_status: nextPaymentStatus,

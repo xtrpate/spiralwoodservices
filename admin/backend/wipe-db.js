@@ -1,5 +1,51 @@
 require("dotenv").config();
 const pool = require("./config/db");
+const readline = require("readline");
+
+// ══════════════════════════════════════════════════════════════════════════
+// SAFEGUARDS — this script permanently deletes customer accounts, orders,
+// payments, blueprints, warranties, and appointments. It must never run
+// against a live/production database by accident.
+// ══════════════════════════════════════════════════════════════════════════
+
+// 1. Hard block if this is pointed at a production environment.
+if (process.env.NODE_ENV === "production") {
+  console.error(
+    "❌ Refusing to run wipe-db.js: NODE_ENV is 'production'. " +
+      "This script is for local/dev databases only.",
+  );
+  process.exit(1);
+}
+
+// 2. Require the operator to type the database name to confirm, so a
+//    misclick or copy-pasted command can't wipe data unintentionally.
+function askConfirmation(question) {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  return new Promise((resolve) => rl.question(question, (answer) => {
+    rl.close();
+    resolve(answer);
+  }));
+}
+
+async function confirmAndRun() {
+  const dbName = process.env.DB_NAME || "(unknown database)";
+  console.log(`⚠️  You are about to WIPE the database: "${dbName}"`);
+  console.log("   This deletes ALL customer accounts, orders, payments,");
+  console.log("   blueprints, warranties, and appointments. This cannot be undone.");
+  const answer = await askConfirmation(
+    `\nType the database name ("${dbName}") to confirm, or anything else to cancel: `,
+  );
+
+  if (answer.trim() !== dbName) {
+    console.log("\n🛑 Cancelled. No changes were made.");
+    process.exit(0);
+  }
+
+  await wipeDatabase();
+}
 
 async function wipeDatabase() {
   try {
@@ -77,4 +123,4 @@ async function wipeDatabase() {
   }
 }
 
-wipeDatabase();
+confirmAndRun();

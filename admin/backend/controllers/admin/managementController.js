@@ -192,21 +192,29 @@ exports.getCustomers = async (req, res) => {
 exports.updateCustomerStatus = async (req, res) => {
   try {
     const { action } = req.body;
+    const targetId = parseInt(req.params.id);
     const map = {
       approve: { approval_status: "approved", is_active: 1 },
       reject: { approval_status: "rejected" },
       activate: { is_active: 1 },
       deactivate: { is_active: 0 },
+      // "delete" used to hard-DELETE the row, which threw a foreign-key
+      // error for any customer with orders/warranties/contracts (i.e. almost
+      // every real customer). Soft-delete instead, same pattern as the
+      // admin/staff deleteUser fix, so order/warranty history is preserved.
+      delete: { is_active: 0 },
     };
-    if (action === "delete") {
-      // ── FIXED: Parsed ID ──
-      await pool.query("DELETE FROM users WHERE id = ? AND role = 'customer'", [
-        parseInt(req.params.id),
-      ]);
-      return res.json({ message: "Customer deleted." });
-    }
+
     if (!map[action])
       return res.status(400).json({ message: "Invalid action." });
+
+    const [[before]] = await pool.query(
+      "SELECT name, email, approval_status, is_active FROM users WHERE id = ? AND role = 'customer'",
+      [targetId],
+    );
+    if (!before)
+      return res.status(404).json({ message: "Customer not found." });
+
     const updates = map[action];
     const sets = Object.keys(updates).map((k) => `${k} = ?`);
     const values = Object.values(updates);
@@ -218,15 +226,22 @@ exports.updateCustomerStatus = async (req, res) => {
     }
 
     // Add the ID for the WHERE clause
-    values.push(parseInt(req.params.id));
+    values.push(targetId);
 
     // ── FIXED: Execute the dynamic query safely ──
     await pool.query(
-      `UPDATE users SET ${sets.join(", ")} WHERE id = ?`,
+      `UPDATE users SET ${sets.join(", ")} WHERE id = ? AND role = 'customer'`,
       values,
     );
 
-    // Optional fix: Corrected the grammar for the success message (prevents "rejectd")
+    req.auditRecord = {
+      id: targetId,
+      old: before,
+      new: { action, ...updates },
+    };
+
+    // "delete" keeps its original wording in the response so the frontend
+    // button/message doesn't need to change, even though it's a soft-delete now.
     const actionMessage = action === "reject" ? "rejected" : `${action}d`;
 
     res.json({ message: `Customer ${actionMessage}.` });
@@ -281,6 +296,11 @@ exports.createUser = async (req, res) => {
       [name, email, hashed, role, normalizedStaffType, phone],
     );
 
+    // Audit: never include the hashed/plaintext password in log data.
+    req.auditRecord = {
+      id: r.insertId,
+      new: { name, email, role, staff_type: normalizedStaffType, phone },
+    };
     res.status(201).json({ message: "User created.", id: r.insertId });
   } catch (err) {
     if (err.code === "ER_DUP_ENTRY") {
@@ -301,6 +321,12 @@ exports.updateUser = async (req, res) => {
     }
 
     const normalizedStaffType = role === "staff" ? staff_type : null;
+    const targetId = parseInt(req.params.id);
+
+    const [[before]] = await pool.query(
+      "SELECT name, email, role, staff_type, phone, is_active FROM users WHERE id = ?",
+      [targetId],
+    );
 
     await pool.query(
       `UPDATE users
@@ -313,10 +339,15 @@ exports.updateUser = async (req, res) => {
         normalizedStaffType,
         phone,
         is_active ? 1 : 0,
-        parseInt(req.params.id),
+        targetId,
       ],
     );
 
+    req.auditRecord = {
+      id: targetId,
+      old: before || null,
+      new: { name, email, role, staff_type: normalizedStaffType, phone, is_active: is_active ? 1 : 0 },
+    };
     res.json({ message: "User updated." });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -327,11 +358,14 @@ exports.resetUserPassword = async (req, res) => {
   try {
     const { new_password } = req.body;
     const hashed = await bcrypt.hash(new_password, 12);
+    const targetId = parseInt(req.params.id);
     // ── FIXED: Parsed ID ──
     await pool.query("UPDATE users SET password = ? WHERE id = ?", [
       hashed,
-      parseInt(req.params.id),
+      targetId,
     ]);
+    // Audit: record that a reset happened, never the password itself.
+    req.auditRecord = { id: targetId, new: { password_reset: true } };
     res.json({ message: "Password reset." });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -340,19 +374,59 @@ exports.resetUserPassword = async (req, res) => {
 
 exports.deleteUser = async (req, res) => {
   try {
+    const targetId = parseInt(req.params.id);
     // ── FIXED: Parsed ID and strict equality ──
-    if (parseInt(req.params.id) === parseInt(req.user.id))
+    if (targetId === parseInt(req.user.id))
       return res
         .status(400)
         .json({ message: "Cannot delete your own account." });
+
+    const [[before]] = await pool.query(
+      "SELECT name, email, role, is_active FROM users WHERE id = ?",
+      [targetId],
+    );
 
     // Soft delete: deactivate instead of hard-deleting, to preserve
     // task/blueprint/receipt/etc. history tied to this user via FK.
     await pool.query(
       "UPDATE users SET is_active = 0 WHERE id = ? AND role != 'customer'",
-      [parseInt(req.params.id)],
+      [targetId],
     );
+
+    req.auditRecord = { id: targetId, old: before || null, new: { is_active: 0 } };
     res.json({ message: "User deactivated." });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// GET /api/audit-logs?limit=50
+// Lets admins view recent audit trail entries from the app itself,
+// without needing direct database access.
+exports.getAuditLogs = async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+
+    const [rows] = await pool.query(
+      `SELECT
+         al.id,
+         al.action,
+         al.table_name,
+         al.record_id,
+         al.old_values,
+         al.new_values,
+         al.ip_address,
+         al.created_at,
+         u.name AS user_name,
+         u.email AS user_email
+       FROM audit_logs al
+       LEFT JOIN users u ON u.id = al.user_id
+       ORDER BY al.created_at DESC, al.id DESC
+       LIMIT ?`,
+      [limit],
+    );
+
+    res.json({ logs: rows });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

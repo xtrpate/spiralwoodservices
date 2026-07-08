@@ -187,6 +187,12 @@ exports.deleteRawMaterial = async (req, res) => {
     ]);
     res.json({ message: "Raw material deleted." });
   } catch (err) {
+    if (err.code === "ER_ROW_IS_REFERENCED_2") {
+      return res.status(400).json({
+        message:
+          "Cannot delete this raw material because it is used in one or more product recipes (bill of materials) or stock movement records.",
+      });
+    }
     res.status(500).json({ message: err.message });
   }
 };
@@ -614,6 +620,12 @@ exports.deleteSupplier = async (req, res) => {
     ]);
     res.json({ message: "Supplier deleted." });
   } catch (err) {
+    if (err.code === "ER_ROW_IS_REFERENCED_2") {
+      return res.status(400).json({
+        message:
+          "Cannot delete this supplier because it is linked to one or more raw materials or stock movement records.",
+      });
+    }
     res.status(500).json({ message: err.message });
   }
 };

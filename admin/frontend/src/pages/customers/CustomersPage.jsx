@@ -52,7 +52,7 @@ export default function CustomersPage() {
     const labels = {
       activate: "Activate this account?",
       deactivate: "Deactivate this account?",
-      delete: "Permanently delete this customer? This cannot be undone.",
+      delete: "Deactivate and remove this customer from active use? Their order/warranty history will be kept, and the account can be reactivated later if needed.",
     };
 
     if (!window.confirm(labels[action])) return;
@@ -449,14 +449,18 @@ function CustomerDetailModal({ row, onClose, onAction }) {
 
           <button
             onClick={() => {
-              if (window.confirm(`Permanently delete ${row.name}?`)) {
+              if (
+                window.confirm(
+                  `Deactivate ${row.name}'s account? Their order/warranty history will be kept, and the account can be reactivated later.`,
+                )
+              ) {
                 onAction("delete");
                 onClose();
               }
             }}
             style={btnDelete}
           >
-            🗑 Delete Account
+            🗑 Deactivate Account
           </button>
         </div>
 

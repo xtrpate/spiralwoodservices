@@ -382,9 +382,6 @@ const normalizeCustomOrderItem = (row = {}) => {
 
 /* ── Submit Custom Order / Request ── */
 exports.createCustomOrder = async (req, res) => {
-  console.log("[CUSTOM ORDER HIT]");
-  console.log("[CUSTOM ORDER BODY]", JSON.stringify(req.body, null, 2));
-
   const { items, name, phone, delivery_address, payment_method, notes } =
     req.body;
 

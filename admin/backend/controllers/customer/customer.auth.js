@@ -191,13 +191,9 @@ const sendResetOtpEmail = async (email, otp, name) => {
 ══════════════════════════════════════════════════════════════ */
 
 exports.register = async (req, res) => {
-  console.log("=== INCOMING REGISTRATION DATA ===");
-  console.log(req.body);
-
   const { first_name, last_name, email, phone, address, password, recaptcha_token } = req.body;
 
   if (!first_name || !last_name || !email || !phone || !address || !password) {
-    console.log("Validation Failed: Missing a field.");
     return res.status(400).json({ message: "All fields are required." });
   }
 

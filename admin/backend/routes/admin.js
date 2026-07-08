@@ -7,6 +7,7 @@ const { verifyFileSignature } = require("../utils/verifyFileSignature");
 const router = express.Router();
 
 const { authenticate, authorize } = require("../middleware/auth");
+const { logAction } = require("../middleware/auditLog");
 const upload = require("../config/upload");
 
 // ── Controllers ────────────────────────────────────────────────────────────────
@@ -159,14 +160,26 @@ router.get("/products/report", adminStaff, products.getReport);
 router.get("/products", adminStaff, products.getAll);
 router.patch("/products/bulk-publish", adminOnly, products.bulkPublish);
 router.get("/products/:id", adminStaff, products.getOne);
-router.post("/products", adminOnly, upload.uploadProductImage, products.create);
+router.post(
+  "/products",
+  adminOnly,
+  upload.uploadProductImage,
+  logAction("create_product", "products"),
+  products.create,
+);
 router.put(
   "/products/:id",
   adminOnly,
   upload.uploadProductImage,
+  logAction("update_product", "products"),
   products.update,
 );
-router.delete("/products/:id", adminOnly, products.remove);
+router.delete(
+  "/products/:id",
+  adminOnly,
+  logAction("delete_product", "products"),
+  products.remove,
+);
 router.patch("/products/:id/publish", adminOnly, products.togglePublish);
 router.patch("/products/:id/featured", adminOnly, products.toggleFeatured);
 router.patch(
@@ -248,11 +261,21 @@ router.patch(
 
 router.get("/orders", adminStaff, orders.getAll);
 router.get("/orders/:id", adminStaff, orders.getOne);
-router.patch("/orders/:id/status", adminOnly, orders.updateStatus);
+router.patch(
+  "/orders/:id/status",
+  adminOnly,
+  logAction("update_order_status", "orders"),
+  orders.updateStatus,
+);
 router.post("/orders/:id/accept", adminOnly, orders.accept);
 router.post("/orders/:id/decline", adminOnly, orders.decline);
 
-router.post("/orders/:id/verify-payment", adminOnly, orders.verifyPayment);
+router.post(
+  "/orders/:id/verify-payment",
+  adminOnly,
+  logAction("verify_payment", "payment_transactions"),
+  orders.verifyPayment,
+);
 
 router.get("/orders/:id/discussion", adminStaff, orders.getOrderDiscussion);
 
@@ -305,16 +328,46 @@ router.patch(
 // CUSTOMER ACCOUNT MANAGEMENT
 // ══════════════════════════════════════════════════════════════════════════════
 router.get("/customers", adminOnly, mgmt.getCustomers);
-router.put("/customers/:id/status", adminOnly, mgmt.updateCustomerStatus);
+router.put(
+  "/customers/:id/status",
+  adminOnly,
+  logAction("update_customer_status", "users"),
+  mgmt.updateCustomerStatus,
+);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // USER & ROLE MANAGEMENT
 // ══════════════════════════════════════════════════════════════════════════════
 router.get("/users", adminOnly, mgmt.getUsers);
-router.post("/users", adminOnly, mgmt.createUser);
-router.put("/users/:id", adminOnly, mgmt.updateUser);
-router.patch("/users/:id/password", adminOnly, mgmt.resetUserPassword);
-router.delete("/users/:id", adminOnly, mgmt.deleteUser);
+router.post(
+  "/users",
+  adminOnly,
+  logAction("create_user", "users"),
+  mgmt.createUser,
+);
+router.put(
+  "/users/:id",
+  adminOnly,
+  logAction("update_user", "users"),
+  mgmt.updateUser,
+);
+router.patch(
+  "/users/:id/password",
+  adminOnly,
+  logAction("reset_user_password", "users"),
+  mgmt.resetUserPassword,
+);
+router.delete(
+  "/users/:id",
+  adminOnly,
+  logAction("delete_user", "users"),
+  mgmt.deleteUser,
+);
+
+// ══════════════════════════════════════════════════════════════════════════════
+// AUDIT LOGS (view-only, no direct DB access needed)
+// ══════════════════════════════════════════════════════════════════════════════
+router.get("/audit-logs", adminOnly, mgmt.getAuditLogs);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // WEBSITE MAINTENANCE

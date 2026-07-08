@@ -75,9 +75,6 @@ const ensureStaffType = async (userId, expectedType) => {
 
 exports.getDeliverableOrders = async (req, res) => {
   try {
-    console.log("=== GET DELIVERABLE ORDERS HIT ===");
-    console.log("ACTIVE FILE:", __filename);
-
     // ── FIXED: Added empty array [] to prevent driver panics ──
     const [rows] = await db.query(
       `
@@ -110,8 +107,6 @@ exports.getDeliverableOrders = async (req, res) => {
     `,
       [], // Added this safety parameter
     );
-
-    console.log("DELIVERABLE ORDERS SAMPLE:", rows[0] || null);
 
     res.json(rows);
   } catch (err) {
