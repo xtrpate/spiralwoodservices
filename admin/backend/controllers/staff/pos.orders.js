@@ -54,10 +54,17 @@ exports.createOrder = async (req, res) => {
 
   if (normalizedPaymentMethod === "cash") {
     const normalizedCash = parseFloat(cash_received);
-    if (Number.isNaN(normalizedCash))
-      return res
-        .status(400)
-        .json({ message: "Cash received is required for cash payments" });
+    if (
+      cash_received === null ||
+      cash_received === undefined ||
+      cash_received === "" ||
+      Number.isNaN(normalizedCash) ||
+      normalizedCash < 0
+    )
+      return res.status(400).json({
+        message:
+          "Cash received is required and must be a valid non-negative number.",
+      });
   }
 
   if (delivery && !String(delivery.address || "").trim()) {
@@ -124,6 +131,16 @@ exports.createOrder = async (req, res) => {
     const deliveryFeeAmt = parseFloat(delivery_fee) || 0;
 
     const total = Math.max(subtotal + tax - discountAmt + deliveryFeeAmt, 0);
+
+    if (normalizedPaymentMethod === "cash") {
+      const normalizedCashForTotal = parseFloat(cash_received);
+      if (normalizedCashForTotal < total) {
+        await conn.rollback();
+        return res.status(400).json({
+          message: "Cash received cannot be less than the total amount.",
+        });
+      }
+    }
 
     const deliveryRequestedDate = delivery
       ? String(
@@ -268,10 +285,8 @@ exports.createOrder = async (req, res) => {
         ? parseFloat(cash_received)
         : null;
     const normalizedChange =
-      normalizedPaymentMethod === "cash" &&
-      change !== null &&
-      change !== undefined
-        ? parseFloat(change)
+      normalizedPaymentMethod === "cash" && normalizedCashReceived !== null
+        ? Math.max(normalizedCashReceived - total, 0)
         : null;
 
     const [receiptResult] = await conn.query(
