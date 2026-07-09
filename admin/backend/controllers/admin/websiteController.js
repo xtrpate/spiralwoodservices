@@ -236,7 +236,7 @@ exports.getBackupLogs = async (req, res) => {
       ...r,
       filename: r.file_name,
       file_size: r.file_size_kb,
-      file_url: `https://wisdom-ov31.onrender.com/backups/${r.file_name}`,
+      file_url: `/backup/download/${r.file_name}`,
       triggered_by: r.triggered_by_name || "System",
     }));
     res.json(normalized);
@@ -295,8 +295,42 @@ exports.triggerManualBackup = async (req, res) => {
       message: "Backup completed successfully.",
       file: fileName,
       size_kb: sizeKb,
-      file_url: `https://wisdom-ov31.onrender.com/backups/${fileName}`,
+      file_url: `/backup/download/${fileName}`,
     });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ── DOWNLOAD a specific backup file (admin-only, filename strictly validated) ─
+const BACKUP_FILENAME_RE = /^[A-Za-z0-9_-]+\.sql$/;
+
+exports.downloadBackup = async (req, res) => {
+  try {
+    const filename = String(req.params.filename || "");
+
+    if (!BACKUP_FILENAME_RE.test(filename)) {
+      return res.status(400).json({ message: "Invalid backup filename." });
+    }
+
+    const backupDir =
+      process.env.BACKUP_DIR || path.join(__dirname, "../../backups");
+    const absDir = path.isAbsolute(backupDir)
+      ? backupDir
+      : path.join(__dirname, "../../", backupDir);
+
+    const filePath = path.join(absDir, filename);
+
+    // Defense in depth: resolved file must still live directly inside absDir.
+    if (path.dirname(filePath) !== absDir) {
+      return res.status(400).json({ message: "Invalid backup filename." });
+    }
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ message: "Backup file not found." });
+    }
+
+    res.download(filePath, filename);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

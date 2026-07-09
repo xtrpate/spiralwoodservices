@@ -394,6 +394,7 @@ router.put("/website/pages/:slug", adminOnly, website.updatePage);
 // ══════════════════════════════════════════════════════════════════════════════
 router.get("/backup/logs", adminOnly, website.getBackupLogs);
 router.post("/backup/trigger", adminOnly, website.triggerManualBackup);
+router.get("/backup/download/:filename", adminOnly, website.downloadBackup);
 
 router.post(
   "/orders/:id/custom-request/approve",

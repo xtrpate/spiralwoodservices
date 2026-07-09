@@ -22,6 +22,22 @@ export default function BackupPage() {
     load();
   }, []);
 
+  const downloadBackup = async (log) => {
+    try {
+      const res = await api.get(log.file_url, { responseType: "blob" });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = log.filename || "backup.sql";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error("Download failed. Please try again.");
+    }
+  };
+
   const triggerBackup = async () => {
     if (!window.confirm("Run a manual database backup now?")) return;
     setTrigger(true);
@@ -281,9 +297,9 @@ export default function BackupPage() {
                     </td>
                     <td style={td}>
                       {isSuccess && log.file_url ? (
-                        <a
-                          href={log.file_url}
-                          download
+                        <button
+                          type="button"
+                          onClick={() => downloadBackup(log)}
                           style={dlBtn}
                           onMouseEnter={(e) =>
                             (e.currentTarget.style.background = "#3f3f46")
@@ -293,7 +309,7 @@ export default function BackupPage() {
                           }
                         >
                           ⬇ Download
-                        </a>
+                        </button>
                       ) : (
                         "—"
                       )}
