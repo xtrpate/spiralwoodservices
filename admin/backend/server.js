@@ -47,15 +47,12 @@ const limiter = rateLimit({
 
 app.use("/api", limiter);
 
-const backupDir = process.env.BACKUP_DIR || path.join(__dirname, "backups");
 const uploadDir = process.env.UPLOAD_DIR || path.join(__dirname, "uploads");
 
-app.use(
-  "/backups",
-  express.static(
-    path.isAbsolute(backupDir) ? backupDir : path.join(__dirname, backupDir),
-  ),
-);
+// NOTE: Backup files are no longer served via a public express.static route.
+// They are downloaded through the authenticated, admin-only
+// GET /api/backup/download/:filename route (see routes/admin.js +
+// controllers/admin/websiteController.js::downloadBackup).
 const { verifyUploadSignature } = require("./utils/signedUrl");
 
 const SENSITIVE_UPLOAD_PREFIXES = [
