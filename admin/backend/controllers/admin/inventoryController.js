@@ -1,5 +1,12 @@
 // controllers/inventoryController.js – Raw Materials, Build Materials, Stock Movement
 const pool = require("../../config/db");
+const {
+  isValidNonNegativeInteger,
+  isValidUnitLabel,
+  isNonEmptyString,
+  isValidPhoneNumber,
+  isValidEmail,
+} = require("../../utils/validators");
 const POSITIVE_MOVEMENT_TYPES = new Set(["in", "return"]);
 
 const computeStockStatus = (quantity, reorderPoint = 0) => {
@@ -92,11 +99,35 @@ exports.createRawMaterial = async (req, res) => {
       return res.status(400).json({ message: "Unit is required." });
     }
 
+    if (!isValidUnitLabel(unit)) {
+      return res.status(400).json({
+        message: "Unit must be a valid text label such as pcs, kg, meter, or sheet.",
+      });
+    }
+
     if ([qty, reorderPoint, unitCost].some((v) => Number.isNaN(v) || v < 0)) {
       return res.status(400).json({
         message:
           "Quantity, reorder point, and unit cost must be valid non-negative numbers.",
       });
+    }
+
+    if (
+      category_id !== null &&
+      category_id !== undefined &&
+      category_id !== "" &&
+      (!isValidNonNegativeInteger(category_id) || Number(category_id) <= 0)
+    ) {
+      return res.status(400).json({ message: "Category must be a valid selection." });
+    }
+
+    if (
+      supplier_id !== null &&
+      supplier_id !== undefined &&
+      supplier_id !== "" &&
+      (!isValidNonNegativeInteger(supplier_id) || Number(supplier_id) <= 0)
+    ) {
+      return res.status(400).json({ message: "Supplier must be a valid selection." });
     }
 
     const status = computeStockStatus(qty, reorderPoint);
@@ -147,11 +178,35 @@ exports.updateRawMaterial = async (req, res) => {
       return res.status(400).json({ message: "Unit is required." });
     }
 
+    if (!isValidUnitLabel(unit)) {
+      return res.status(400).json({
+        message: "Unit must be a valid text label such as pcs, kg, meter, or sheet.",
+      });
+    }
+
     if ([qty, reorderPoint, unitCost].some((v) => Number.isNaN(v) || v < 0)) {
       return res.status(400).json({
         message:
           "Quantity, reorder point, and unit cost must be valid non-negative numbers.",
       });
+    }
+
+    if (
+      category_id !== null &&
+      category_id !== undefined &&
+      category_id !== "" &&
+      (!isValidNonNegativeInteger(category_id) || Number(category_id) <= 0)
+    ) {
+      return res.status(400).json({ message: "Category must be a valid selection." });
+    }
+
+    if (
+      supplier_id !== null &&
+      supplier_id !== undefined &&
+      supplier_id !== "" &&
+      (!isValidNonNegativeInteger(supplier_id) || Number(supplier_id) <= 0)
+    ) {
+      return res.status(400).json({ message: "Supplier must be a valid selection." });
     }
 
     const status = computeStockStatus(qty, reorderPoint);
@@ -303,6 +358,26 @@ exports.createStockMovement = async (req, res) => {
       return res.status(400).json({
         message: "Quantity must be a valid number greater than 0.",
       });
+    }
+
+    if (
+      supplier_id !== null &&
+      supplier_id !== undefined &&
+      supplier_id !== "" &&
+      (!isValidNonNegativeInteger(supplier_id) || Number(supplier_id) <= 0)
+    ) {
+      await conn.rollback();
+      return res.status(400).json({ message: "Supplier must be a valid selection." });
+    }
+
+    if (
+      order_id !== null &&
+      order_id !== undefined &&
+      order_id !== "" &&
+      (!isValidNonNegativeInteger(order_id) || Number(order_id) <= 0)
+    ) {
+      await conn.rollback();
+      return res.status(400).json({ message: "Order reference must be a valid selection." });
     }
 
     const delta = POSITIVE_MOVEMENT_TYPES.has(type)
@@ -590,6 +665,32 @@ exports.getSuppliers = async (req, res) => {
 exports.createSupplier = async (req, res) => {
   try {
     const { name, address, contact_number, email } = req.body;
+
+    if (!isNonEmptyString(name)) {
+      return res.status(400).json({ message: "Supplier name is required." });
+    }
+
+    if (
+      contact_number !== null &&
+      contact_number !== undefined &&
+      contact_number !== "" &&
+      !isValidPhoneNumber(contact_number)
+    ) {
+      return res.status(400).json({
+        message:
+          "Contact number must be a valid phone number (digits, spaces, dashes, or + only).",
+      });
+    }
+
+    if (
+      email !== null &&
+      email !== undefined &&
+      email !== "" &&
+      !isValidEmail(email)
+    ) {
+      return res.status(400).json({ message: "Email must be a valid email address." });
+    }
+
     const [r] = await pool.query(
       "INSERT INTO suppliers (name, address, contact_number, email) VALUES (?,?,?,?)",
       [name, address, contact_number, email],
@@ -603,6 +704,32 @@ exports.createSupplier = async (req, res) => {
 exports.updateSupplier = async (req, res) => {
   try {
     const { name, address, contact_number, email } = req.body;
+
+    if (!isNonEmptyString(name)) {
+      return res.status(400).json({ message: "Supplier name is required." });
+    }
+
+    if (
+      contact_number !== null &&
+      contact_number !== undefined &&
+      contact_number !== "" &&
+      !isValidPhoneNumber(contact_number)
+    ) {
+      return res.status(400).json({
+        message:
+          "Contact number must be a valid phone number (digits, spaces, dashes, or + only).",
+      });
+    }
+
+    if (
+      email !== null &&
+      email !== undefined &&
+      email !== "" &&
+      !isValidEmail(email)
+    ) {
+      return res.status(400).json({ message: "Email must be a valid email address." });
+    }
+
     await pool.query(
       "UPDATE suppliers SET name=?,address=?,contact_number=?,email=? WHERE id=?",
       [name, address, contact_number, email, parseInt(req.params.id)],

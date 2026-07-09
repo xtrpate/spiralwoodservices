@@ -60,6 +60,11 @@ export default function RawMaterialsPage() {
       }
       setModal(null);
       load();
+    } catch (error) {
+      // Toast na yung message dito ay ginagawa na ng global interceptor
+      // sa api.js — hindi na natin uulitin dito. Ang catch lang ay para
+      // pigilan yung "Uncaught runtime errors" crash at panatilihing
+      // bukas ang modal.
     } finally {
       setSaving(false);
     }
@@ -67,9 +72,13 @@ export default function RawMaterialsPage() {
 
   const handleDelete = async (id) => {
     if (!window.confirm("Delete this raw material?")) return;
-    await api.delete(`/inventory/raw/${id}`);
-    toast.success("Deleted.");
-    load();
+    try {
+      await api.delete(`/inventory/raw/${id}`);
+      toast.success("Deleted.");
+      load();
+    } catch (error) {
+      // Parehong dahilan — global interceptor na ang nag-a-toast.
+    }
   };
 
   const setField = (k, v) =>

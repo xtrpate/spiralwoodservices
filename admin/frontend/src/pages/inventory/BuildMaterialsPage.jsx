@@ -322,9 +322,9 @@ export function StockMovementPage() {
       resetForm();
       load();
     } catch (err) {
-      toast.error(
-        err.response?.data?.message || "Failed to record stock movement.",
-      );
+      // Global interceptor sa api.js na ang nag-a-toast ng error message —
+      // hindi na natin uulitin dito. Ang catch lang ay para pigilan ang
+      // uncaught crash at panatilihing bukas ang modal.
     }
   };
 
@@ -586,10 +586,16 @@ export function SuppliersPage() {
 
   const handleSave = async (e) => {
     e.preventDefault();
-    if (modal === "add") await api.post("/suppliers", form);
-    else await api.put(`/suppliers/${form.id}`, form);
-    setModal(null);
-    load();
+    try {
+      if (modal === "add") await api.post("/suppliers", form);
+      else await api.put(`/suppliers/${form.id}`, form);
+      setModal(null);
+      load();
+    } catch (error) {
+      // Global interceptor sa api.js na ang nag-a-toast ng error message.
+      // Ang catch lang ay para pigilan ang "Uncaught runtime errors"
+      // crash at panatilihing bukas ang modal.
+    }
   };
 
   return (
@@ -629,8 +635,12 @@ export function SuppliersPage() {
                   <button
                     onClick={async () => {
                       if (window.confirm("Delete supplier?")) {
-                        await api.delete(`/suppliers/${s.id}`);
-                        load();
+                        try {
+                          await api.delete(`/suppliers/${s.id}`);
+                          load();
+                        } catch (error) {
+                          // Global interceptor na ang nag-a-toast ng error.
+                        }
                       }
                     }}
                     style={{
