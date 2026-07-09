@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import api from "../../services/api";
 import toast from "react-hot-toast";
 
@@ -136,6 +137,7 @@ export default function BuildMaterialsPage() {
 
 function BOMPanel({ product, onClose }) {
   const [bom, setBom] = useState([]);
+  const navigate = useNavigate();
   useEffect(() => {
     api
       .get(`/products/${product.id}`)
@@ -182,9 +184,18 @@ function BOMPanel({ product, onClose }) {
         </button>
       </div>
       {bom.length === 0 ? (
-        <p style={{ color: "#71717a", fontSize: 13 }}>
-          No bill of materials defined.
-        </p>
+        <div>
+          <p style={{ color: "#71717a", fontSize: 13, marginBottom: 12 }}>
+            No bill of materials defined. Add or edit BOM from the Product
+            Edit page before using Product Stock-In.
+          </p>
+          <button
+            onClick={() => navigate(`/admin/products/${product.id}/edit`)}
+            style={btnEdit}
+          >
+            Edit Product
+          </button>
+        </div>
       ) : (
         <table
           style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}
