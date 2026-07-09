@@ -6,7 +6,7 @@ const API_BASE_URL =
   process.env.REACT_APP_API_URL ||
   (window.location.hostname === "localhost"
     ? "http://localhost:5000/api"
-    : "https://spiralwood-77jw.onrender.com/api");
+    : "https://spiralwoodservices.onrender.com/api");
 
 export const buildAssetUrl = (value) => {
   const raw = String(value || "").trim();
