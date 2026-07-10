@@ -4,6 +4,7 @@ import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import useAuthStore from "../../store/authStore";
 import toast from "react-hot-toast";
 import { useCart } from "../../pages/customer/cartcontext";
+import "./AdminLayout.css";
 
 const NAV_ITEMS = [
   { section: "Dashboard" },
@@ -141,12 +142,31 @@ export default function AdminLayout() {
 
   const [showLogoutModal, setShowLogoutModal] = useState(false);
 
+  // Mobile/tablet off-canvas drawer state — independent from the desktop
+  // `open` (collapsed/expanded width) state above. Only relevant below
+  // the 1023px breakpoint defined in AdminLayout.css.
+  const [mobileOpen, setMobileOpen] = useState(false);
+
   useEffect(() => {
     if (user && user.role === "customer") {
       toast.error("Access restricted. Redirecting to storefront.");
       navigate("/");
     }
   }, [user, navigate]);
+
+  // Lock background scroll while the mobile drawer is open. Scoped to this
+  // component only — cleans itself up on close/unmount, and nothing else
+  // in the app currently touches document.body.style.overflow.
+  useEffect(() => {
+    if (mobileOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [mobileOpen]);
 
   const handleLogout = () => {
     setShowLogoutModal(true);
@@ -164,14 +184,26 @@ export default function AdminLayout() {
 
   return (
     <div
+      className="wisdom-admin-shell"
       style={{
         display: "flex",
         minHeight: "100vh",
         fontFamily: "Inter, sans-serif",
       }}
     >
+      {/* Mobile/tablet backdrop — only rendered (and visible via CSS) below
+          the 1023px breakpoint, tapping it closes the drawer. */}
+      {mobileOpen && (
+        <div
+          className="wisdom-sidebar-overlay"
+          onClick={() => setMobileOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
       {/* ── Sidebar ──────────────────────────────────────────────────────── */}
       <aside
+        className={`wisdom-sidebar ${mobileOpen ? "mobile-open" : ""}`}
         style={{
           width: open ? 240 : 64,
           background: "#0a0a0a" /* 👉 Pitch black background */,
@@ -190,23 +222,36 @@ export default function AdminLayout() {
             borderBottom: "1px solid #27272a" /* 👉 Dark gray border */,
             display: "flex",
             alignItems: "center",
+            justifyContent: "space-between",
             gap: 10,
           }}
         >
-          <span style={{ fontSize: 22 }}>🪵</span>
-          {open && (
-            <span
-              style={{
-                fontWeight: 800,
-                fontSize: 16,
-                color: "#ffffff" /* 👉 Pure white text */,
-                whiteSpace: "nowrap",
-                letterSpacing: "0.02em",
-              }}
-            >
-              WISDOM Admin
-            </span>
-          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 22 }}>🪵</span>
+            {open && (
+              <span
+                style={{
+                  fontWeight: 800,
+                  fontSize: 16,
+                  color: "#ffffff" /* 👉 Pure white text */,
+                  whiteSpace: "nowrap",
+                  letterSpacing: "0.02em",
+                }}
+              >
+                WISDOM Admin
+              </span>
+            )}
+          </div>
+
+          {/* Mobile-only close button — hidden on desktop via CSS */}
+          <button
+            type="button"
+            className="wisdom-sidebar-close"
+            onClick={() => setMobileOpen(false)}
+            aria-label="Close menu"
+          >
+            ✕
+          </button>
         </div>
 
         {/* Navigation */}
@@ -243,6 +288,7 @@ export default function AdminLayout() {
                 key={item.path}
                 to={item.path}
                 end
+                onClick={() => setMobileOpen(false)}
                 style={({ isActive }) => ({
                   display: "flex",
                   alignItems: "center",
@@ -267,8 +313,9 @@ export default function AdminLayout() {
           })}
         </nav>
 
-        {/* Toggle */}
+        {/* Toggle — desktop collapse/expand only, hidden on mobile via CSS */}
         <button
+          className="wisdom-sidebar-collapse-toggle"
           onClick={() => setOpen((o) => !o)}
           style={{
             background:
@@ -290,6 +337,7 @@ export default function AdminLayout() {
 
       {/* ── Main Area ────────────────────────────────────────────────────── */}
       <div
+        className="wisdom-admin-main"
         style={{
           flex: 1,
           display: "flex",
@@ -301,6 +349,7 @@ export default function AdminLayout() {
       >
         {/* Topbar */}
         <header
+          className="wisdom-admin-topbar"
           style={{
             background: "#ffffff",
             borderBottom: "1px solid #e4e4e7" /* 👉 Neutral border */,
@@ -311,7 +360,20 @@ export default function AdminLayout() {
             gap: 16,
           }}
         >
-          <span style={{ fontSize: 13, color: "#52525b", fontWeight: 500 }}>
+          {/* Mobile-only hamburger — hidden on desktop via CSS */}
+          <button
+            type="button"
+            className="wisdom-hamburger-btn"
+            onClick={() => setMobileOpen(true)}
+            aria-label="Open menu"
+          >
+            ☰
+          </button>
+
+          <span
+            className="wisdom-admin-user-badge"
+            style={{ fontSize: 13, color: "#52525b", fontWeight: 500 }}
+          >
             👤 {user?.name}{" "}
             <span
               style={{
@@ -370,7 +432,7 @@ export default function AdminLayout() {
           <div
             style={{
               background: "#0a0a0a",
-              width: 360,
+              width: "min(360px, 90vw)",
               padding: 24,
               borderRadius: 16,
               boxShadow: "0 20px 40px rgba(0,0,0,0.2)",

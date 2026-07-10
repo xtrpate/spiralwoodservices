@@ -499,6 +499,32 @@
   background: #111111;
 }
 
+/* Google's default reCAPTCHA checkbox widget is a fixed 304x78px box.
+   On phones narrower than ~380px, the card's available content width
+   (after .auth-split and .auth-card-panel padding) drops below 304px,
+   which would either clip the widget or force horizontal scroll inside
+   the card. Scaling it down visually keeps it fully in view without
+   touching the widget itself or the token it returns. */
+.recaptcha-wrap {
+  transform-origin: 0 0;
+}
+
+@media (max-width: 380px) {
+  .recaptcha-wrap {
+    transform: scale(0.85);
+  }
+}
+
+@media (max-width: 480px) {
+  .auth-close {
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
 @media (max-width: 820px) {
   .auth-split {
     width: min(100%, calc(100vw - 24px));

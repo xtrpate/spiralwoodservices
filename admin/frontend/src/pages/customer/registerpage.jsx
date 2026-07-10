@@ -529,7 +529,7 @@ export default function RegisterPage() {
               </label>
             </div>
 
-            <div style={{ margin: "14px 0" }}>
+            <div style={{ margin: "14px 0" }} className="recaptcha-wrap">
               <ReCAPTCHA
                 sitekey={process.env.REACT_APP_RECAPTCHA_SITE_KEY}
                 onChange={(token) => setCaptchaToken(token || "")}

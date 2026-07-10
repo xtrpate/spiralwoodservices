@@ -23,6 +23,10 @@ body {
   font-family: "Montserrat", sans-serif;
   background: var(--bg);
   color: var(--text);
+  /* Safety net against accidental horizontal scroll on small screens.
+     Individual components should still avoid overflowing content —
+     this is a backstop, not a fix for any specific element. */
+  overflow-x: hidden;
 }
 
 button,
@@ -830,6 +834,23 @@ a {
 
   .cust-header-search {
     display: none;
+  }
+}
+
+/* Auth overlay (login/register/forgot-password/etc.) — the fixed padding
+   set inline in customerlayout.jsx accounts for the sticky header height,
+   which shrinks on smaller screens, so the overlay's top padding should
+   shrink with it to keep the card centered instead of pushed low. */
+@media (max-width: 767px) {
+  .cust-auth-overlay {
+    padding: 96px 16px 24px !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .cust-auth-overlay {
+    padding: 88px 10px 20px !important;
+    align-items: flex-start !important;
   }
 }
 

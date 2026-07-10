@@ -347,14 +347,14 @@ export default function LocationPicker({
       )}
 
       <div style={{ position: "relative" }}>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <input
             type="text"
             value={addressValue || ""}
             onChange={handleAddressInputChange}
             placeholder="Street, Barangay, City, Province"
             style={{
-              flex: "1 1 auto",
+              flex: "1 1 220px",
               minWidth: 0,
               padding: "8px 10px",
               border: "1px solid #d4d4d4",
@@ -367,6 +367,7 @@ export default function LocationPicker({
             onClick={handleUseCurrentLocation}
             disabled={locStatus === "loading"}
             style={{
+              flex: "1 1 auto",
               padding: "8px 12px",
               border: "1px solid #d4d4d4",
               borderRadius: 8,
@@ -375,6 +376,7 @@ export default function LocationPicker({
               fontWeight: 600,
               cursor: locStatus === "loading" ? "default" : "pointer",
               whiteSpace: "nowrap",
+              minHeight: 40,
             }}
           >
             {locStatus === "loading" ? "Locating..." : "Use My Current Location"}
@@ -519,12 +521,14 @@ export default function LocationPicker({
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
+          flexWrap: "wrap",
+          rowGap: 4,
           marginTop: 8,
           fontSize: 12,
           color: "#666",
         }}
       >
-        <span>
+        <span style={{ minWidth: 0 }}>
           {hasPin
             ? `Pin set at ${value.lat.toFixed(5)}, ${value.lng.toFixed(5)}`
             : "Type above, tap the map, or use your current location to set a pin."}
