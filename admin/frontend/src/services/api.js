@@ -6,11 +6,7 @@ const API_BASE_URL =
   process.env.REACT_APP_API_URL ||
   (window.location.hostname === "localhost"
     ? "http://localhost:5000/api"
-<<<<<<< Updated upstream
     : "https://spiralwoodservices.onrender.com/api");
-=======
-    : "https://spiralwood-1.onrender.com/api");
->>>>>>> Stashed changes
 
 export const buildAssetUrl = (value) => {
   const raw = String(value || "").trim();
