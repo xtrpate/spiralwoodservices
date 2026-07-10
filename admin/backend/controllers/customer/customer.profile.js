@@ -57,16 +57,83 @@ exports.uploadAvatar = async (req, res) => {
    PUT /basic  — name + address
 ──────────────────────────────────────── */
 exports.updateBasic = async (req, res) => {
-  const { name, address } = req.body;
+  const { name, address, address_lat, address_lng } = req.body;
   if (!name?.trim())
     return res.status(400).json({ message: "Name is required." });
+
+  // address_lat/address_lng are treated as an optional PAIR that the
+  // customer either:
+  //   - omits entirely from the request → leave the existing saved pin
+  //     untouched (e.g. a plain name/address edit shouldn't wipe it out)
+  //   - sends both as null/"" → explicitly clear the saved pin
+  //   - sends both as valid numbers → update the saved pin
+  //   - sends only one of the two → rejected, since a half-updated pin
+  //     is a broken/inconsistent state
+  const latKeyPresent = address_lat !== undefined;
+  const lngKeyPresent = address_lng !== undefined;
+
+  if (latKeyPresent !== lngKeyPresent) {
+    return res.status(400).json({
+      message: "Both latitude and longitude must be provided together.",
+    });
+  }
+
+  const touchesPin = latKeyPresent && lngKeyPresent;
+  let cleanLat = null;
+  let cleanLng = null;
+
+  if (touchesPin) {
+    const isEmptyPinValue = (v) => v === null || v === "";
+    const bothEmpty = isEmptyPinValue(address_lat) && isEmptyPinValue(address_lng);
+    const bothFilled = !isEmptyPinValue(address_lat) && !isEmptyPinValue(address_lng);
+
+    if (!bothEmpty && !bothFilled) {
+      return res.status(400).json({
+        message: "Both latitude and longitude must be provided together.",
+      });
+    }
+
+    if (bothFilled) {
+      const latNum = Number(address_lat);
+      const lngNum = Number(address_lng);
+
+      if (
+        !Number.isFinite(latNum) ||
+        !Number.isFinite(lngNum) ||
+        latNum < -90 ||
+        latNum > 90 ||
+        lngNum < -180 ||
+        lngNum > 180
+      ) {
+        return res.status(400).json({
+          message:
+            "Invalid map location. Latitude must be between -90 and 90, and longitude between -180 and 180.",
+        });
+      }
+
+      cleanLat = latNum;
+      cleanLng = lngNum;
+    }
+    // else bothEmpty — cleanLat/cleanLng stay null, which clears the pin
+  }
+
   try {
-    // ── FIXED: Switched to .query ──
-    await db.query("UPDATE users SET name=?, address=? WHERE id=?", [
-      name.trim(),
-      address?.trim() || "",
-      req.user.id,
-    ]);
+    if (touchesPin) {
+      // Request explicitly included lat/lng (either clearing or setting
+      // a pin) — update all four columns.
+      await db.query(
+        "UPDATE users SET name=?, address=?, address_lat=?, address_lng=? WHERE id=?",
+        [name.trim(), address?.trim() || "", cleanLat, cleanLng, req.user.id],
+      );
+    } else {
+      // Request didn't mention lat/lng at all — only touch name/address,
+      // leaving any previously saved pin exactly as it was.
+      await db.query("UPDATE users SET name=?, address=? WHERE id=?", [
+        name.trim(),
+        address?.trim() || "",
+        req.user.id,
+      ]);
+    }
     res.json({ message: "Profile updated." });
   } catch (err) {
     console.error("[profile/basic]", err);

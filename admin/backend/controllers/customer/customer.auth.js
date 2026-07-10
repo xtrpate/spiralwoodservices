@@ -580,6 +580,7 @@ exports.login = async (req, res) => {
     const normalizedEmail = String(email).trim().toLowerCase();
 
     // 1. Query the unified table
+    // 1. Query the unified table
     const [rows] = await db.query(
       `
       SELECT
@@ -591,6 +592,8 @@ exports.login = async (req, res) => {
         staff_type, /* Added staff_type for the JWT */
         phone,
         address,
+        address_lat,
+        address_lng,
         profile_photo,
         is_verified,
         is_active
@@ -676,6 +679,8 @@ exports.login = async (req, res) => {
         staff_type: user.staff_type || null,
         phone: user.phone,
         address: user.address,
+        address_lat: user.address_lat,
+        address_lng: user.address_lng,
         profile_photo: user.profile_photo,
       },
     });

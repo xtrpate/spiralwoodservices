@@ -38,6 +38,8 @@ exports.createOrder = async (req, res) => {
       name,
       phone,
       delivery_address,
+      delivery_lat,
+      delivery_lng,
       payment_method,
       notes,
     } = req.body;
@@ -85,6 +87,42 @@ exports.createOrder = async (req, res) => {
       return res.status(400).json({
         message: "Delivery address is required for this payment method.",
       });
+    }
+
+    // The map pin is optional for now (not required even for COD/PayMongo)
+    // — only validate lat/lng when the customer actually provided a value.
+    // If provided, both must be present together (no half-a-pin).
+    const hasDeliveryLat =
+      delivery_lat !== undefined && delivery_lat !== null && delivery_lat !== "";
+    const hasDeliveryLng =
+      delivery_lng !== undefined && delivery_lng !== null && delivery_lng !== "";
+
+    let cleanDeliveryLat = null;
+    let cleanDeliveryLng = null;
+
+    if (hasDeliveryLat || hasDeliveryLng) {
+      const latNum = Number(delivery_lat);
+      const lngNum = Number(delivery_lng);
+
+      if (
+        !hasDeliveryLat ||
+        !hasDeliveryLng ||
+        !Number.isFinite(latNum) ||
+        !Number.isFinite(lngNum) ||
+        latNum < -90 ||
+        latNum > 90 ||
+        lngNum < -180 ||
+        lngNum > 180
+      ) {
+        await conn.rollback();
+        return res.status(400).json({
+          message:
+            "Invalid map location. Latitude must be between -90 and 90, and longitude between -180 and 180.",
+        });
+      }
+
+      cleanDeliveryLat = latNum;
+      cleanDeliveryLng = lngNum;
     }
 
     /* ── Step 1: validate each raw line's shape, then merge duplicate
@@ -231,15 +269,15 @@ exports.createOrder = async (req, res) => {
       : "partial";
 
     const proof_path = req.file ? `uploads/proofs/${req.file.filename}` : null;
-
     /* Insert order */
     const [orderRes] = await conn.query(
       `INSERT INTO orders
         (order_number, customer_id, type, order_type, status,
         payment_method, payment_status, payment_proof,
-        delivery_address, walkin_customer_name, walkin_customer_phone,
+        delivery_address, delivery_lat, delivery_lng,
+        walkin_customer_name, walkin_customer_phone,
         notes, subtotal, total, created_at)
-      VALUES (?,?,'online','standard','pending',?,?,?,?,?,?,?,?,?,NOW())`,
+      VALUES (?,?,'online','standard','pending',?,?,?,?,?,?,?,?,?,?,?,NOW())`,
       [
         order_number,
         req.user.id,
@@ -247,6 +285,8 @@ exports.createOrder = async (req, res) => {
         payment_status,
         proof_path,
         cleanDeliveryAddress,
+        cleanDeliveryLat,
+        cleanDeliveryLng,
         String(name).trim(),
         String(phone).trim(),
         notes || "",

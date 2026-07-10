@@ -87,6 +87,8 @@ exports.getDeliverableOrders = async (req, res) => {
         o.payment_status,
         o.total,
         o.delivery_address,
+        o.delivery_lat,
+        o.delivery_lng,
         o.requested_delivery_date,
         o.delivery_request_notes,
         o.created_at,
@@ -136,6 +138,8 @@ exports.getDeliveries = async (req, res) => {
         o.total,
         o.payment_method,
         o.payment_status,
+        o.delivery_lat,
+        o.delivery_lng,
         o.created_at AS order_created_at,
 
         COALESCE(
@@ -334,6 +338,8 @@ exports.createDelivery = async (req, res) => {
         o.order_number,
         o.total,
         o.payment_method,
+        o.delivery_lat,
+        o.delivery_lng,
         o.created_at AS order_created_at,
 
         COALESCE(o.walkin_customer_name, customer.name, 'Walk-in Customer') AS customer_name,
@@ -680,6 +686,8 @@ exports.updateDeliveryStatus = async (req, res) => {
         o.total,
         o.payment_method,
         o.payment_status,
+        o.delivery_lat,
+        o.delivery_lng,
         o.created_at AS order_created_at,
 
         COALESCE(
@@ -817,6 +825,8 @@ exports.getRiderHistory = async (req, res) => {
          d.status, 
          o.payment_status, 
          o.total, 
+         o.delivery_lat,
+         o.delivery_lng,
          d.delivered_date, 
          d.updated_at 
        FROM deliveries d
