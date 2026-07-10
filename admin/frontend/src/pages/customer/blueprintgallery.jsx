@@ -8,6 +8,7 @@ import axios from "axios";
 import { Search, ShoppingCart, Eye } from "lucide-react";
 import { useCart } from "./cartcontext";
 import "./blueprintgallery.css";
+import { Search, ShoppingCart, Eye, PenTool } from "lucide-react";
 
 const API = "http://localhost:5000";
 
@@ -434,14 +435,26 @@ export default function BlueprintGallery({ embedded = false }) {
               ))}
             </div>
           ) : blueprints.length === 0 ? (
-            <div className="catalog-empty">
-              <div style={{ fontSize: 48, marginBottom: 12 }}>📐</div>
-              <h3>No blueprints found</h3>
-              <p>Try adjusting your search or filters.</p>
+            <div className="bp-empty-premium">
+              <div className="bp-empty-icon-wrapper">
+                <PenTool size={48} strokeWidth={1.5} />
+              </div>
+              <h2>No blueprints found</h2>
+              <p>
+                {hasFilters 
+                  ? "We couldn't find any blueprints matching your current filters. Try adjusting your search criteria."
+                  : "The blueprint gallery is currently empty. Check back later for new custom designs!"}
+              </p>
               {hasFilters && (
-                <button className="clear-filters" onClick={clearFilters}>
-                  Clear Filters
-                </button>
+                <div className="bp-empty-actions">
+                  <button
+                    type="button"
+                    className="bp-primary-btn"
+                    onClick={clearFilters}
+                  >
+                    Clear Filters
+                  </button>
+                </div>
               )}
             </div>
           ) : (

@@ -183,28 +183,26 @@ export default function CartPage() {
             <span className="fm-cart-step-num">1</span>
             <span>Shopping Cart</span>
           </div>
-
           <ChevronRight size={16} className="fm-cart-progress-arrow" />
-
           <div className="fm-cart-step">
             <span className="fm-cart-step-num">2</span>
             <span>Checkout Details</span>
           </div>
-
           <ChevronRight size={16} className="fm-cart-progress-arrow" />
-
           <div className="fm-cart-step">
             <span className="fm-cart-step-num">3</span>
             <span>Order Complete</span>
           </div>
         </div>
 
-        <div className="fm-cart-empty">
-          <div className="fm-cart-empty-icon">🛒</div>
-          <h2>Your shopping cart is empty</h2>
+        <div className="fm-cart-empty-premium">
+          <div className="fm-cart-empty-icon-wrapper">
+            <ShoppingBag size={48} strokeWidth={1.5} />
+          </div>
+          <h2>Your cart is currently empty</h2>
           <p>
-            Browse ready-made products or customize a furniture template to add
-            items here.
+            Looks like you haven't added anything yet. Discover our premium 
+            ready-made furniture or start a custom blueprint design.
           </p>
 
           <div className="fm-cart-empty-actions">
@@ -213,8 +211,8 @@ export default function CartPage() {
               className="fm-cart-primary-btn"
               onClick={() => navigate("/catalog")}
             >
-              <ShoppingBag size={16} />
-              Browse Products
+              <Package size={16} />
+              Shop Ready-Made
             </button>
 
             <button
@@ -223,7 +221,7 @@ export default function CartPage() {
               onClick={() => navigate("/customize")}
             >
               <Scissors size={16} />
-              Customize Furniture
+              Custom Blueprint
             </button>
           </div>
         </div>

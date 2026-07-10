@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import api, { buildAssetUrl } from "../../services/api";
 import "./orders.css";
+import { PackageSearch, ShoppingBag } from "lucide-react";
 
 const STATUS_META = {
   pending: {
@@ -646,22 +647,28 @@ export default function OrdersPage() {
           <p>Loading your orders…</p>
         </div>
       ) : filtered.length === 0 ? (
-        <div className="orders-empty">
-          <div className="orders-empty-icon">No orders</div>
-          <h3>{filter === "all" ? "No orders yet" : `No ${filter} orders`}</h3>
+        <div className="orders-empty-premium">
+          <div className="orders-empty-icon-wrapper">
+            <PackageSearch size={48} strokeWidth={1.5} />
+          </div>
+          <h2>{filter === "all" ? "No orders found" : `No ${filter} orders`}</h2>
           <p>
             {filter === "all"
-              ? "Start shopping and your orders will appear here."
-              : `You do not have any ${filter} orders right now.`}
+              ? "You haven't placed any orders yet. Once you do, they will appear here so you can track their status and delivery."
+              : `You currently don't have any orders in the "${filter}" status.`}
           </p>
 
           {filter === "all" && (
-            <button
-              className="orders-shop-btn"
-              onClick={() => navigate("/catalog")}
-            >
-              Browse products
-            </button>
+            <div className="orders-empty-actions">
+              <button
+                type="button"
+                className="orders-primary-btn"
+                onClick={() => navigate("/catalog")}
+              >
+                <ShoppingBag size={16} />
+                Start Shopping
+              </button>
+            </div>
           )}
         </div>
       ) : (
