@@ -783,6 +783,56 @@ exports.getOne = async (req, res) => {
   }
 };
 
+// Restores product/product_variation stock for a standard (non-blueprint)
+// order's items. Called only when an order transitions into "cancelled",
+// and only after the status change itself has already been confirmed to
+// have happened (see call sites in updateStatus/decline). Blueprint/custom
+// orders never deduct stock at creation, so they are skipped here.
+async function restoreStandardOrderStock(conn, orderId) {
+  const [[order]] = await conn.query(
+    `SELECT order_type FROM orders WHERE id = ? LIMIT 1`,
+    [orderId],
+  );
+
+  if (!order || normalize(order.order_type) === "blueprint") return;
+
+  const [items] = await conn.query(
+    `SELECT product_id, variation_id, quantity
+     FROM order_items
+     WHERE order_id = ?`,
+    [orderId],
+  );
+
+  for (const item of items) {
+    if (item.variation_id) {
+      await conn.query(
+        `UPDATE product_variations
+         SET stock = stock + ?
+         WHERE id = ?`,
+        [item.quantity, item.variation_id],
+      );
+    } else {
+      await conn.query(
+        `UPDATE products
+         SET stock = stock + ?
+         WHERE id = ?`,
+        [item.quantity, item.product_id],
+      );
+    }
+
+    await conn.query(
+      `UPDATE products
+       SET stock_status = CASE
+         WHEN stock <= 0              THEN 'out_of_stock'
+         WHEN stock <= reorder_point  THEN 'low_stock'
+         ELSE 'in_stock'
+       END
+       WHERE id = ?`,
+      [item.product_id],
+    );
+  }
+}
+
 exports.updateStatus = async (req, res) => {
   const conn = await pool.getConnection();
 
@@ -1105,12 +1155,29 @@ exports.updateStatus = async (req, res) => {
       });
     }
 
-    await conn.query(
+    const [statusUpdateResult] = await conn.query(
       `UPDATE orders
        SET status = ?
-       WHERE id = ?`,
-      [nextStatus, parseInt(req.params.id)],
+       WHERE id = ? AND status = ?`,
+      [nextStatus, parseInt(req.params.id), currentStatus],
     );
+
+    // Guard against a race condition where another request already
+    // changed this order's status between the SELECT above and this
+    // UPDATE (e.g. double-click, or two staff acting on it at once).
+    if (statusUpdateResult.affectedRows === 0) {
+      await conn.rollback();
+      return res.status(409).json({
+        message:
+          "This order's status was already changed. Please refresh and try again.",
+      });
+    }
+
+    // Standard (non-blueprint) orders deduct stock at creation time —
+    // restore it here now that the cancellation is confirmed.
+    if (nextStatus === "cancelled") {
+      await restoreStandardOrderStock(conn, parseInt(req.params.id));
+    }
 
     // 👉 NEW: Automatically sync the Rider's delivery status
     if (nextStatus === "completed" || nextStatus === "cancelled") {
@@ -1153,15 +1220,31 @@ exports.accept = async (req, res) => {
 };
 
 exports.decline = async (req, res) => {
+  const conn = await pool.getConnection();
   try {
+    await conn.beginTransaction();
+
     const { reason } = req.body;
-    await pool.query(
+    const orderId = parseInt(req.params.id);
+
+    const [declineResult] = await conn.query(
       "UPDATE orders SET status = 'cancelled', cancellation_reason = ?, cancelled_at = NOW() WHERE id = ? AND status = 'pending'",
-      [reason || "", parseInt(req.params.id)],
+      [reason || "", orderId],
     );
+
+    // Only restore stock if this call actually changed the row (guards
+    // against double-click / already-declined orders).
+    if (declineResult.affectedRows > 0) {
+      await restoreStandardOrderStock(conn, orderId);
+    }
+
+    await conn.commit();
     res.json({ message: "Order declined." });
   } catch (err) {
+    await conn.rollback();
     res.status(500).json({ message: err.message });
+  } finally {
+    conn.release();
   }
 };
 
