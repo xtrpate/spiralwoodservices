@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const { authenticate, requireCustomer } = require("../../middleware/auth");
 const { signUploadPath } = require("../../utils/signedUrl");
+const { verifyBufferSignature } = require("../../utils/verifyFileSignature");
 
 const customRequestAssetsDir = path.join(
   __dirname,
@@ -92,6 +93,12 @@ const getExtFromMime = (mime = "") => {
   return "";
 };
 
+// Thrown when a reference photo's declared image MIME type doesn't match
+// its actual decoded byte content — i.e. a spoofed data URL. Kept as a
+// distinct error type so the caller can reject the whole order with a
+// clear 400 instead of this bubbling up as a generic 500.
+class ReferencePhotoValidationError extends Error {}
+
 const saveBase64ReferencePhoto = async (fileLike = {}) => {
   const dataUrl = String(fileLike?.data_url || "").trim();
   const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
@@ -110,12 +117,26 @@ const saveBase64ReferencePhoto = async (fileLike = {}) => {
   }
 
   const ext = getExtFromMime(mimeType) || ".jpg";
+
+  // Decode first, then verify the REAL bytes match the declared image
+  // type before anything touches disk. Buffer.from never throws on
+  // malformed base64 — a corrupted/truncated string just decodes to a
+  // shorter or garbled buffer, which safely fails the signature check
+  // below instead of crashing the server.
+  const fileBuffer = Buffer.from(base64Body, "base64");
+
+  if (!verifyBufferSignature(fileBuffer, ext)) {
+    throw new ReferencePhotoValidationError(
+      "One of the uploaded reference photos does not match its declared image type.",
+    );
+  }
+
   const filename = `custom_ref_${Date.now()}_${Math.random()
     .toString(36)
     .slice(2, 10)}${ext}`;
 
   const absolutePath = path.join(customRequestAssetsDir, filename);
-  await fs.promises.writeFile(absolutePath, Buffer.from(base64Body, "base64"));
+  await fs.promises.writeFile(absolutePath, fileBuffer);
 
   return {
     file_url: `/uploads/custom-request-assets/${filename}`,
@@ -573,7 +594,17 @@ exports.createCustomOrder = async (req, res) => {
       }
 
       for (const photo of item.reference_photos || []) {
-        const saved = await saveBase64ReferencePhoto(photo);
+        let saved;
+        try {
+          saved = await saveBase64ReferencePhoto(photo);
+        } catch (photoErr) {
+          if (photoErr instanceof ReferencePhotoValidationError) {
+            await conn.rollback();
+            return res.status(400).json({ message: photoErr.message });
+          }
+          throw photoErr;
+        }
+
         if (!saved) continue;
 
         await insertCustomOrderAttachment(conn, {

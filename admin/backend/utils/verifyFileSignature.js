@@ -24,11 +24,11 @@ function readHead(filePath, length = 16) {
   return buffer;
 }
 
-// Returns true if the actual file content matches the given extension.
-exports.verifyFileSignature = (filePath, ext) => {
-  const cleanExt = String(ext || "").replace(".", "").toLowerCase();
-  const buffer = readHead(filePath);
-
+// Shared check: does this in-memory buffer's header match the expected
+// signature for the given (already-lowercased, no-dot) extension? Both
+// verifyFileSignature and verifyBufferSignature below call this, so the
+// signature rules only live in one place.
+function matchesSignatureForExt(buffer, cleanExt) {
   if (cleanExt === "webp") {
     return (
       buffer.toString("ascii", 0, 4) === "RIFF" &&
@@ -45,4 +45,22 @@ exports.verifyFileSignature = (filePath, ext) => {
   if (!rule) return false;
 
   return rule.some((sig) => matchesBytes(buffer, sig));
+}
+
+// Returns true if the actual file content matches the given extension.
+// Unchanged behavior — still reads the header from a saved file on disk.
+exports.verifyFileSignature = (filePath, ext) => {
+  const cleanExt = String(ext || "").replace(".", "").toLowerCase();
+  const buffer = readHead(filePath);
+  return matchesSignatureForExt(buffer, cleanExt);
+};
+
+// Same magic-byte check as verifyFileSignature, but works on an
+// in-memory Buffer instead of a file path — for cases like base64 data
+// URLs where nothing has been written to disk yet (and shouldn't be,
+// until the content is confirmed to match what it claims to be).
+exports.verifyBufferSignature = (buffer, ext) => {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) return false;
+  const cleanExt = String(ext || "").replace(".", "").toLowerCase();
+  return matchesSignatureForExt(buffer, cleanExt);
 };
