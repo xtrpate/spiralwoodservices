@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import api from "../../services/api";
-import { Calendar } from "lucide-react";
+import { Calendar, MapPin } from "lucide-react";
 
 export default function RiderHistory() {
   const [history, setHistory] = useState([]);
@@ -240,15 +240,36 @@ export default function RiderHistory() {
                     </div>
                     <div
                       style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
                         fontSize: "12px",
                         color: "#71717a",
                         maxWidth: "200px",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
                         marginTop: "2px",
                       }}
                     >
-                      {h.address || "No address provided"}
+                      <span
+                        style={{
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {h.address || "No address provided"}
+                      </span>
+                      {Number.isFinite(Number(h.delivery_lat)) &&
+                        Number.isFinite(Number(h.delivery_lng)) && (
+                          <a
+                            href={`https://www.google.com/maps/search/?api=1&query=${h.delivery_lat},${h.delivery_lng}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Open in Google Maps"
+                            style={{ flexShrink: 0, lineHeight: 0 }}
+                          >
+                            <MapPin size={12} color="#2563eb" />
+                          </a>
+                        )}
                     </div>
                   </td>
 

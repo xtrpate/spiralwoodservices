@@ -1,9 +1,10 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import api, { buildAssetUrl } from "../../services/api";
 import { useCart } from "./cartcontext";
 import useAuthStore from "../../store/authStore";
 import toast from "react-hot-toast";
+import LocationPicker from "../../components/LocationPicker";
 import "./customizepage.css";
 
 const PAYMENT_METHODS = [
@@ -74,14 +75,79 @@ export default function CheckoutPage() {
     notes: "",
   });
 
+  // Shopee/Lazada-style default delivery address.
+  // useDefaultAddress: whether this order is currently using the saved
+  //   profile address/pin as a shortcut (checkbox state).
+  // deliveryPin: the CURRENT checkout pin for this order only — never
+  //   written back to the user's profile.
+  // userToggledRef: becomes true the moment the customer manually edits
+  //   the address text or the map pin (typing, search, click, drag,
+  //   clear, or current-location). Once true, incoming profile updates
+  //   stop silently overwriting the customer's in-progress choice.
+  const [useDefaultAddress, setUseDefaultAddress] = useState(() =>
+    Boolean(String(user?.address || "").trim()),
+  );
+  const [deliveryPin, setDeliveryPin] = useState(() =>
+    user?.address_lat != null && user?.address_lng != null
+      ? { lat: Number(user.address_lat), lng: Number(user.address_lng) }
+      : null,
+  );
+  const userToggledRef = useRef(false);
+
   useEffect(() => {
     setForm((prev) => ({
       ...prev,
       name: user?.name || prev.name || "",
       phone: user?.phone || prev.phone || "",
-      delivery_address: user?.address || prev.delivery_address || "",
+      delivery_address: userToggledRef.current
+        ? prev.delivery_address
+        : user?.address || prev.delivery_address || "",
     }));
+
+    if (userToggledRef.current) return;
+
+    const hasDefault = Boolean(String(user?.address || "").trim());
+    setUseDefaultAddress(hasDefault);
+    setDeliveryPin(
+      hasDefault && user?.address_lat != null && user?.address_lng != null
+        ? { lat: Number(user.address_lat), lng: Number(user.address_lng) }
+        : null,
+    );
   }, [user]);
+
+  // Re-checking "Use my default delivery address" always pulls the
+  // latest saved profile values, even if the customer had switched
+  // to a custom address/pin earlier in this session.
+  const handleToggleDefaultAddress = (checked) => {
+    userToggledRef.current = true;
+    setUseDefaultAddress(checked);
+    if (checked) {
+      setField("delivery_address", user?.address || "");
+      setDeliveryPin(
+        user?.address_lat != null && user?.address_lng != null
+          ? { lat: Number(user.address_lat), lng: Number(user.address_lng) }
+          : null,
+      );
+    }
+  };
+
+  // Any manual address text edit is a custom-address override for this
+  // order only — it never touches users.address. LocationPicker now owns
+  // the address input itself, so this receives plain text, not an event.
+  const handleAddressInputChange = (text) => {
+    userToggledRef.current = true;
+    setUseDefaultAddress(false);
+    setField("delivery_address", text);
+  };
+
+  // Fired for every LocationPicker pin change: click-to-place, drag,
+  // search result, "use my current location", and "clear pin" (which
+  // calls onChange(null)). All of these are custom-address overrides.
+  const handlePinChange = (next) => {
+    userToggledRef.current = true;
+    setUseDefaultAddress(false);
+    setDeliveryPin(next);
+  };
 
   useEffect(() => {
     try {
@@ -153,6 +219,10 @@ export default function CheckoutPage() {
 
   const total = subtotal;
 
+  const hasDefaultAddress = Boolean(String(user?.address || "").trim());
+  // COP (Cash on Pick-up) needs no delivery address or map at all.
+  const showAddressSection = form.payment_method !== "cop";
+
   const handleSubmit = async (e) => {
     if (e?.preventDefault) e.preventDefault();
 
@@ -177,6 +247,14 @@ export default function CheckoutPage() {
       return;
     }
 
+    if (
+      form.payment_method !== "cop" &&
+      !String(form.delivery_address || "").trim()
+    ) {
+      toast.error("Please enter your delivery address.");
+      return;
+    }
+
     const payloadItems = checkoutItems.map((item) => ({
       key: item.key,
       product_id: item.product_id,
@@ -186,18 +264,31 @@ export default function CheckoutPage() {
       unit_price: Number(item.unit_price || 0),
     }));
 
+    const isPickup = form.payment_method === "cop";
+
     const formData = new FormData();
     formData.append("items", JSON.stringify(payloadItems));
     formData.append("name", String(form.name || "").trim());
     formData.append("phone", String(form.phone || "").trim());
     formData.append(
       "delivery_address",
-      String(form.delivery_address || "").trim(),
+      isPickup ? "" : String(form.delivery_address || "").trim(),
     );
     formData.append("payment_method", String(form.payment_method || "").trim());
     formData.append("notes", String(form.notes || "").trim());
     formData.append("subtotal", String(subtotal));
     formData.append("total", String(total));
+
+    // Only ever send a complete pair — never a single lat or lng — and
+    // never for pickup orders, which have no delivery destination.
+    if (
+      !isPickup &&
+      Number.isFinite(deliveryPin?.lat) &&
+      Number.isFinite(deliveryPin?.lng)
+    ) {
+      formData.append("delivery_lat", String(deliveryPin.lat));
+      formData.append("delivery_lng", String(deliveryPin.lng));
+    }
 
     setLoading(true);
 
@@ -384,17 +475,124 @@ export default function CheckoutPage() {
                   />
                 </div>
 
-                <div className="form-field full">
-                  <label>Delivery Address</label>
-                  <input
-                    type="text"
-                    placeholder="Street, Barangay, City, Province"
-                    value={form.delivery_address}
-                    onChange={(e) =>
-                      setField("delivery_address", e.target.value)
-                    }
-                  />
-                </div>
+                {showAddressSection ? (
+                  <>
+                    {hasDefaultAddress && (
+                      <div className="form-field full">
+                        <label
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            cursor: "pointer",
+                          }}
+                        >
+                          <span
+                            style={{
+                              position: "relative",
+                              display: "inline-flex",
+                              width: 18,
+                              height: 18,
+                              flexShrink: 0,
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={useDefaultAddress}
+                              onChange={(e) =>
+                                handleToggleDefaultAddress(e.target.checked)
+                              }
+                              style={{
+                                position: "absolute",
+                                inset: 0,
+                                width: "100%",
+                                height: "100%",
+                                margin: 0,
+                                padding: 0,
+                                opacity: 0,
+                                cursor: "pointer",
+                              }}
+                            />
+                            <span
+                              aria-hidden="true"
+                              style={{
+                                width: 18,
+                                height: 18,
+                                boxSizing: "border-box",
+                                borderRadius: 4,
+                                border: useDefaultAddress
+                                  ? "2px solid #1d4ed8"
+                                  : "2px solid #999",
+                                background: useDefaultAddress
+                                  ? "#1d4ed8"
+                                  : "#fff",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                flexShrink: 0,
+                                pointerEvents: "none",
+                              }}
+                            >
+                              {useDefaultAddress && (
+                                <svg
+                                  width="11"
+                                  height="11"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="white"
+                                  strokeWidth="4"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <polyline points="20 6 9 17 4 12" />
+                                </svg>
+                              )}
+                            </span>
+                          </span>
+                          Use my default delivery address
+                        </label>
+
+                        {useDefaultAddress && (
+                          <div
+                            style={{
+                              fontSize: 13,
+                              color: "#444",
+                              marginTop: 6,
+                              paddingLeft: 26,
+                            }}
+                          >
+                            📍 {user?.address}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {!useDefaultAddress && (
+                      <div className="form-field full">
+                        <LocationPicker
+                          label="Use a different delivery address"
+                          addressValue={form.delivery_address}
+                          onAddressChange={handleAddressInputChange}
+                          value={deliveryPin}
+                          onChange={handlePinChange}
+                        />
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="form-field full">
+                    <p
+                      style={{
+                        fontSize: 13,
+                        color: "#666",
+                        margin: 0,
+                      }}
+                    >
+                      Cash on Pick-up — no delivery address needed. You'll
+                      pay and collect your order in-store.
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
           </div>
