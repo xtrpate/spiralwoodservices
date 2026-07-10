@@ -191,7 +191,16 @@ export default function LoginPage() {
               className="btn-auth"
               disabled={loading || !captchaToken}
             >
-              {loading ? "Logging in..." : "Log in"}
+              {loading ? (
+                <>
+                  <svg className="spinner-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+                    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                  </svg>
+                  Logging in...
+                </>
+              ) : (
+                "Log in"
+              )}
             </button>
 
             {errorMessage ? (
