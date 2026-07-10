@@ -248,6 +248,13 @@ export default function ProfileSettings() {
     if (!newPhone.trim())
       return setPhoneMsg({ type: "error", text: "Enter a phone number." });
 
+    if (newPhone.length !== 11) {
+      return setPhoneMsg({ type: "error", text: "Phone number must be exactly 11 digits." });
+    }
+    if (!newPhone.startsWith("09")) {
+      return setPhoneMsg({ type: "error", text: "Phone number must start with '09'." });
+    }
+
     setPhoneLoading(true);
     setPhoneMsg({ type: "", text: "" });
     try {
@@ -255,6 +262,7 @@ export default function ProfileSettings() {
       setUser((prev) => ({ ...prev, phone: newPhone }));
       setPhoneMsg({ type: "success", text: "Phone number updated!" });
       setEditPhone(false);
+      setShowPhone(false); 
     } catch (err) {
       setPhoneMsg({
         type: "error",
@@ -700,11 +708,24 @@ export default function ProfileSettings() {
                     <label>Phone Number</label>
                     <div style={{ position: "relative" }}>
                       <input
-                        type={showPhone ? "text" : "tel"}
-                        value={newPhone}
+                        type="text"
+                        value={
+                          showPhone 
+                            ? newPhone 
+                            : (newPhone.length > 2 ? "•".repeat(newPhone.length - 2) + newPhone.slice(-2) : newPhone)
+                        }
                         placeholder="09XXXXXXXXX"
-                        style={{ paddingRight: 50 }}
+                        style={{ 
+                          width: "100%", 
+                          paddingRight: 50,
+                          letterSpacing: showPhone ? "normal" : "2px" 
+                        }}
                         onChange={(e) => {
+                          if (!showPhone) {
+                            setShowPhone(true);
+                            return; 
+                          }
+
                           let val = e.target.value.replace(/\D/g, "");
                           if (val.length > 0 && val[0] !== "0") val = "0" + val;
                           if (val.length > 1 && val[1] !== "9") val = "09" + val.slice(2);
