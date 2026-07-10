@@ -94,6 +94,7 @@ export default function ProfileSettings() {
   const [newPhone, setNewPhone] = useState(user?.phone || "");
   const [phoneMsg, setPhoneMsg] = useState({ type: "", text: "" });
   const [phoneLoading, setPhoneLoading] = useState(false);
+  const [showPhone, setShowPhone] = useState(false);
 
   /* Password change */
   const [editPass, setEditPass] = useState(false);
