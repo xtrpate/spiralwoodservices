@@ -697,32 +697,47 @@ export default function ProfileSettings() {
                 <div className="profile-form">
                   <div className="form-field">
                     <label>Phone Number</label>
-                    <input
-                      type="tel"
-                      value={newPhone}
-                      placeholder="09XXXXXXXXX"
-                      onChange={(e) => {
-                        let val = e.target.value.replace(/\D/g, "");
-                        if (val.length > 0 && val[0] !== "0") val = "0" + val;
-                        if (val.length > 1 && val[1] !== "9") val = "09" + val.slice(2);
-                        if (val.length > 11) val = val.slice(0, 11);
-                        
-                        setNewPhone(val);
-                      }}
-                    />
+                    <div style={{ position: "relative" }}>
+                      <input
+                        type={showPhone ? "text" : "tel"}
+                        value={newPhone}
+                        placeholder="09XXXXXXXXX"
+                        style={{ paddingRight: 50 }}
+                        onChange={(e) => {
+                          let val = e.target.value.replace(/\D/g, "");
+                          if (val.length > 0 && val[0] !== "0") val = "0" + val;
+                          if (val.length > 1 && val[1] !== "9") val = "09" + val.slice(2);
+                          if (val.length > 11) val = val.slice(0, 11);
+                          setNewPhone(val);
+                        }}
+                      />
+                      
+                      <button
+                        type="button"
+                        onClick={() => setShowPhone(!showPhone)}
+                        style={{
+                          position: "absolute",
+                          right: 10,
+                          top: "50%",
+                          transform: "translateY(-50%)",
+                          background: "none",
+                          border: "none",
+                          cursor: "pointer",
+                          color: "#aaa",
+                          display: "flex",
+                          alignItems: "center"
+                        }}
+                      >
+                        {showPhone ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
+                    </div>
                   </div>
+                  
                   <div className="profile-form-actions">
-                    <button
-                      className="btn btn-primary"
-                      onClick={savePhone}
-                      disabled={phoneLoading}
-                    >
+                    <button className="btn btn-primary" onClick={savePhone} disabled={phoneLoading}>
                       {phoneLoading ? "Saving…" : "Save Changes"}
                     </button>
-                    <button
-                      className="btn btn-secondary"
-                      onClick={() => cancelSection("phone")}
-                    >
+                    <button className="btn btn-secondary" onClick={() => cancelSection("phone")}>
                       Cancel
                     </button>
                   </div>
