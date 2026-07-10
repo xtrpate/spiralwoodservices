@@ -687,7 +687,9 @@ export default function ProfileSettings() {
                   <div className="field-row">
                     <label>Current Phone</label>
                     <span className={user?.phone ? "field-val" : "field-empty"}>
-                      {user?.phone || "Not set"}
+                      {user?.phone 
+                        ? `*********${user.phone.slice(-2)}` 
+                        : "Not set"}
                     </span>
                   </div>
                 </div>
@@ -698,8 +700,15 @@ export default function ProfileSettings() {
                     <input
                       type="tel"
                       value={newPhone}
-                      onChange={(e) => setNewPhone(e.target.value)}
                       placeholder="09XXXXXXXXX"
+                      onChange={(e) => {
+                        let val = e.target.value.replace(/\D/g, "");
+                        if (val.length > 0 && val[0] !== "0") val = "0" + val;
+                        if (val.length > 1 && val[1] !== "9") val = "09" + val.slice(2);
+                        if (val.length > 11) val = val.slice(0, 11);
+                        
+                        setNewPhone(val);
+                      }}
                     />
                   </div>
                   <div className="profile-form-actions">

@@ -409,8 +409,20 @@ export default function RegisterPage() {
                 <input
                   type="tel"
                   className="no-icon"
+                  placeholder="09XXXXXXXXX"
                   value={form.phone}
-                  onChange={(e) => set("phone", e.target.value)}
+                  onChange={(e) => {
+                    // 1. Remove all non-numeric characters
+                    let val = e.target.value.replace(/\D/g, ""); 
+                    // 2. Auto-format: If they type '9' first, prepend '0'
+                    if (val.length > 0 && val[0] !== "0") val = "0" + val; 
+                    // 3. Auto-format: Force the second digit to be '9'
+                    if (val.length > 1 && val[1] !== "9") val = "09" + val.slice(2); 
+                    // 4. Restrict to exactly 11 digits
+                    if (val.length > 11) val = val.slice(0, 11); 
+                    
+                    set("phone", val);
+                  }}
                   required
                 />
               </div>

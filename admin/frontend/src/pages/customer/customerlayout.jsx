@@ -63,6 +63,12 @@ export default function CustomerLayout() {
   const [activeOrdersCount, setActiveOrdersCount] = useState(0);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
 
+  // this is for avatar on the navigation bar.
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  useEffect(() => {
+    setAvatarFailed(false);
+  }, [customerUser?.profile_photo]);
+
   const accountRef = useRef(null);
 
   const miniCartRef = useRef(null);
@@ -251,8 +257,8 @@ export default function CustomerLayout() {
     return () => clearTimeout(timer);
   }, [headerSearch, searchFocused]);
 
-  const avatarSrc = customerUser?.profile_photo
-    ? `https://wisdom-ov31.onrender.com/uploads/avatars/${customerUser.profile_photo}`
+  const avatarSrc = customerUser?.profile_photo && !avatarFailed
+    ? `https://spiralwoodservice.onrender.com/uploads/avatars/${customerUser.profile_photo}`
     : "";
 
   const footerInfo = {
@@ -694,6 +700,7 @@ export default function CustomerLayout() {
                         src={avatarSrc}
                         alt="avatar"
                         className="cust-avatar-img"
+                        onError={() => setAvatarFailed(true)}
                       />
                     ) : (
                       <span>
@@ -717,6 +724,7 @@ export default function CustomerLayout() {
                               src={avatarSrc}
                               alt="avatar"
                               className="cust-avatar-img"
+                              onError={() => setAvatarFailed(true)}
                             />
                           ) : (
                             <span>
