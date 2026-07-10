@@ -72,13 +72,18 @@ exports.createOrder = async (req, res) => {
       return res.status(400).json({ message: "Invalid payment method." });
     }
 
-    // COD is a delivery order, so an address is required to actually
-    // deliver it. COP is pickup, so no address is required.
+    // COD and PayMongo (Pay Online) are both delivery orders, so an
+    // address is required to actually deliver the items. COP is pickup,
+    // so no address is required there.
     const cleanDeliveryAddress = String(delivery_address || "").trim();
-    if (normalizedPaymentMethod === "cod" && !cleanDeliveryAddress) {
+    const DELIVERY_REQUIRED_METHODS = ["cod", "paymongo"];
+    if (
+      DELIVERY_REQUIRED_METHODS.includes(normalizedPaymentMethod) &&
+      !cleanDeliveryAddress
+    ) {
       await conn.rollback();
       return res.status(400).json({
-        message: "Delivery address is required for Cash on Delivery orders.",
+        message: "Delivery address is required for this payment method.",
       });
     }
 
