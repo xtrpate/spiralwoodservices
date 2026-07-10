@@ -418,7 +418,31 @@ export default function DeliveryManagement() {
                 </div>
 
                 <div style={detailsGrid}>
-                  <InfoCard label="Address" value={delivery.address || "—"} />
+                  <InfoCard
+                    label="Address"
+                    value={
+                      <>
+                        {delivery.address || "—"}
+                        {Number.isFinite(Number(delivery.delivery_lat)) &&
+                          Number.isFinite(Number(delivery.delivery_lng)) && (
+                            <a
+                              href={`https://www.google.com/maps/search/?api=1&query=${delivery.delivery_lat},${delivery.delivery_lng}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{
+                                display: "block",
+                                marginTop: 4,
+                                fontSize: 11,
+                                fontWeight: 700,
+                                color: "#2563eb",
+                              }}
+                            >
+                              Open in Google Maps ↗
+                            </a>
+                          )}
+                      </>
+                    }
+                  />
                   <InfoCard
                     label="Scheduled"
                     value={formatDateTime(delivery.scheduled_date)}

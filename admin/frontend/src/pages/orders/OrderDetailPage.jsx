@@ -392,6 +392,13 @@ export default function OrderDetailPage() {
 
   const [statusModal, setStatusModal] = useState(false);
   const [newStatus, setNewStatus] = useState("");
+  // Guards against double-submit: without this, a fast double-click (or a
+  // slow network) can fire handleStatusUpdate twice concurrently — the
+  // first call succeeds, then the second arrives after the status has
+  // already changed and gets rejected as an "invalid transition",
+  // producing a confusing error+error+success toast sequence even
+  // though the update itself worked correctly.
+  const [updatingStatus, setUpdatingStatus] = useState(false);
 
   const [proofPreview, setProofPreview] = useState({
     open: false,
@@ -450,6 +457,8 @@ export default function OrderDetailPage() {
   }, [activeTab, canUseDiscussion]);
 
   const handleStatusUpdate = async () => {
+    if (updatingStatus) return;
+
     const nextStatus = normalize(newStatus);
 
     if (!nextStatus || nextStatus === currentOrderStatus) {
@@ -521,6 +530,7 @@ export default function OrderDetailPage() {
       return;
     }
 
+    setUpdatingStatus(true);
     try {
       await api.patch(`/orders/${id}/status`, { status: newStatus });
       toast.success(`Status updated to "${titleCase(newStatus)}".`);
@@ -530,6 +540,8 @@ export default function OrderDetailPage() {
       toast.error(
         err?.response?.data?.message || "Failed to update order status.",
       );
+    } finally {
+      setUpdatingStatus(false);
     }
   };
 
@@ -1495,6 +1507,33 @@ export default function OrderDetailPage() {
               <InfoRow label="Email" value={order.customer_email || "—"} />
               <InfoRow label="Phone" value={order.customer_phone || "—"} />
               <InfoRow label="Address" value={order.customer_address || "—"} />
+              {String(order.delivery_address || "").trim() && (
+                <InfoRow
+                  label="Delivery Address"
+                  value={
+                    <>
+                      {order.delivery_address}
+                      {Number.isFinite(Number(order.delivery_lat)) &&
+                        Number.isFinite(Number(order.delivery_lng)) && (
+                          <a
+                            href={`https://www.google.com/maps/search/?api=1&query=${order.delivery_lat},${order.delivery_lng}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{
+                              marginLeft: 8,
+                              fontSize: 12,
+                              fontWeight: 700,
+                              color: "#2563eb",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            Open in Google Maps ↗
+                          </a>
+                        )}
+                    </>
+                  }
+                />
+              )}
             </Section>
 
             <Section title="Order Overview">
@@ -2038,7 +2077,28 @@ export default function OrderDetailPage() {
                   />
                   <InfoRow
                     label="Address"
-                    value={order.delivery.address || "—"}
+                    value={
+                      <>
+                        {order.delivery.address || "—"}
+                        {Number.isFinite(Number(order.delivery_lat)) &&
+                          Number.isFinite(Number(order.delivery_lng)) && (
+                            <a
+                              href={`https://www.google.com/maps/search/?api=1&query=${order.delivery_lat},${order.delivery_lng}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{
+                                marginLeft: 8,
+                                fontSize: 12,
+                                fontWeight: 700,
+                                color: "#2563eb",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              Open in Google Maps ↗
+                            </a>
+                          )}
+                      </>
+                    }
                   />
                   <InfoRow
                     label="Signed Receipt"
@@ -2493,6 +2553,7 @@ export default function OrderDetailPage() {
               value={newStatus}
               onChange={(e) => setNewStatus(e.target.value)}
               style={{ ...inputFull, marginBottom: 20 }}
+              disabled={updatingStatus}
             >
               {!allowedNextStatuses.length && (
                 <option value="">No further status available</option>
@@ -2568,15 +2629,23 @@ export default function OrderDetailPage() {
             </select>
 
             <div style={modalActions}>
-              <button onClick={() => setStatusModal(false)} style={btnGhost}>
+              <button
+                onClick={() => setStatusModal(false)}
+                style={btnGhost}
+                disabled={updatingStatus}
+              >
                 Cancel
               </button>
               <button
                 onClick={handleStatusUpdate}
                 style={btnPrimary}
-                disabled={!allowedNextStatuses.length || !newStatus}
+                disabled={
+                  !allowedNextStatuses.length ||
+                  !newStatus ||
+                  updatingStatus
+                }
               >
-                Update Status
+                {updatingStatus ? "Updating…" : "Update Status"}
               </button>
             </div>
           </div>

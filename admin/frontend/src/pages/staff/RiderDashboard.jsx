@@ -220,12 +220,38 @@ export default function RiderDashboard() {
                         ...tdStyle,
                         color: "#52525b",
                         maxWidth: "300px",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
                       }}
-                      title={delivery.address}
                     >
-                      {delivery.address}
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                        }}
+                      >
+                        <span
+                          style={{
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                          title={delivery.address}
+                        >
+                          {delivery.address}
+                        </span>
+                        {Number.isFinite(Number(delivery.delivery_lat)) &&
+                          Number.isFinite(Number(delivery.delivery_lng)) && (
+                            <a
+                              href={`https://www.google.com/maps/search/?api=1&query=${delivery.delivery_lat},${delivery.delivery_lng}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title="Open in Google Maps"
+                              style={{ flexShrink: 0, lineHeight: 0 }}
+                            >
+                              <MapPin size={14} color="#2563eb" />
+                            </a>
+                          )}
+                      </div>
                     </td>
                     <td style={tdStyle}>
                       <span

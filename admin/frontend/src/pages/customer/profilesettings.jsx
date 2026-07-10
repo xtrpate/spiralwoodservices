@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import "./profile.css";
 import useAuthStore from "../../store/authStore";
+import LocationPicker from "../../components/LocationPicker";
 
 /* ── Password strength helper ── */
 const getStrength = (pw) => {
@@ -73,6 +74,8 @@ export default function ProfileSettings() {
   const [basicForm, setBasicForm] = useState({
     name: user?.name || "",
     address: user?.address || "",
+    address_lat: user?.address_lat ?? null,
+    address_lng: user?.address_lng ?? null,
   });
   const [basicMsg, setBasicMsg] = useState({ type: "", text: "" });
   const [basicLoading, setBasicLoading] = useState(false);
@@ -167,11 +170,18 @@ export default function ProfileSettings() {
     setBasicLoading(true);
     setBasicMsg({ type: "", text: "" });
     try {
-      await api.put("/customer/profile/basic", basicForm);
+      await api.put("/customer/profile/basic", {
+        name: basicForm.name,
+        address: basicForm.address,
+        address_lat: basicForm.address_lat,
+        address_lng: basicForm.address_lng,
+      });
       setUser((prev) => ({
         ...prev,
         name: basicForm.name,
         address: basicForm.address,
+        address_lat: basicForm.address_lat,
+        address_lng: basicForm.address_lng,
       }));
       setBasicMsg({ type: "success", text: "Profile updated successfully!" });
       setEditBasic(false);
@@ -366,7 +376,11 @@ export default function ProfileSettings() {
               <div className="avatar-upload-area">
                 <div className="avatar-preview">
                   {avatarPreview ? (
-                    <img src={avatarPreview} alt="preview" />
+                    <img
+                      src={avatarPreview}
+                      alt="preview"
+                      onError={() => setAvatarPreview(null)}
+                    />
                   ) : (
                     initials
                   )}
@@ -451,14 +465,28 @@ export default function ProfileSettings() {
                     </div>
                   </div>
                   <div className="form-field full">
-                    <label>Address</label>
-                    <input
-                      type="text"
-                      value={basicForm.address}
-                      onChange={(e) =>
-                        setBasicForm((p) => ({ ...p, address: e.target.value }))
+                    <LocationPicker
+                      label="Address"
+                      addressValue={basicForm.address}
+                      onAddressChange={(text) =>
+                        setBasicForm((p) => ({ ...p, address: text }))
                       }
-                      placeholder="Street, Barangay, City"
+                      value={
+                        basicForm.address_lat != null &&
+                        basicForm.address_lng != null
+                          ? {
+                              lat: Number(basicForm.address_lat),
+                              lng: Number(basicForm.address_lng),
+                            }
+                          : null
+                      }
+                      onChange={(latlng) =>
+                        setBasicForm((p) => ({
+                          ...p,
+                          address_lat: latlng?.lat ?? null,
+                          address_lng: latlng?.lng ?? null,
+                        }))
+                      }
                     />
                   </div>
                   <div className="profile-form-actions">
@@ -502,6 +530,20 @@ export default function ProfileSettings() {
                       className={user?.address ? "field-val" : "field-empty"}
                     >
                       {user?.address || "Not set"}
+                    </span>
+                  </div>
+                  <div className="field-row">
+                    <label>Default Pin</label>
+                    <span
+                      className={
+                        user?.address_lat != null && user?.address_lng != null
+                          ? "field-val"
+                          : "field-empty"
+                      }
+                    >
+                      {user?.address_lat != null && user?.address_lng != null
+                        ? `📍 ${Number(user.address_lat).toFixed(5)}, ${Number(user.address_lng).toFixed(5)}`
+                        : "Not set"}
                     </span>
                   </div>
                 </div>
