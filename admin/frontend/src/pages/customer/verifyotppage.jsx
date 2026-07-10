@@ -141,7 +141,16 @@ export default function VerifyOtpPage() {
             onClick={handleVerify}
             disabled={loading || otp.join("").length < 6}
           >
-            {loading ? "Verifying…" : "Verify Email"}
+            {loading ? (
+              <>
+                <svg className="spinner-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                </svg>
+                Verifying...
+              </>
+            ) : (
+              "Verify Email"
+            )}
           </button>
 
           <div className="otp-resend" style={{ marginTop: 20 }}>

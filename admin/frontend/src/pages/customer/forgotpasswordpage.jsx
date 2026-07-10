@@ -87,7 +87,16 @@ export default function ForgotPasswordPage() {
             </div>
 
             <button type="submit" className="btn-auth" disabled={loading || !captchaToken}>
-              {loading ? "Sending code..." : "Send Reset Code"}
+              {loading ? (
+                <>
+                  <svg className="spinner-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+                    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                  </svg>
+                  Sending code...
+                </>
+              ) : (
+                "Send Reset Code"
+              )}
             </button>
           </form>
 

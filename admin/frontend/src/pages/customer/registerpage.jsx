@@ -277,7 +277,16 @@ export default function RegisterPage() {
               onClick={handleVerifyOtp}
               disabled={otpLoading || otp.join("").length < 6}
             >
-              {otpLoading ? "Verifying..." : "Verify Email"}
+              {otpLoading ? (
+                <>
+                  <svg className="spinner-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+                    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                  </svg>
+                  Verifying...
+                </>
+              ) : (
+                "Verify Email"
+              )}
             </button>
 
             <div className="otp-resend">
@@ -534,7 +543,16 @@ export default function RegisterPage() {
               disabled={loading || !form.agreed || !captchaToken}
               title={!form.agreed ? "Please agree to the Terms of Service and Privacy Policy first." : ""}
             >
-              {loading ? "Creating account..." : "Create Account"}
+              {loading ? (
+                <>
+                  <svg className="spinner-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+                    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                  </svg>
+                  Creating account...
+                </>
+              ) : (
+                "Create Account"
+              )}
             </button>
           </form>
 
