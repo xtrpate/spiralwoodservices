@@ -73,6 +73,7 @@ export default function CustomerLayout() {
 
   const miniCartRef = useRef(null);
   const cartButtonRef = useRef(null);
+  const searchInputRef = useRef(null);
   const {
     cart,
     cartCount,
@@ -299,9 +300,7 @@ export default function CustomerLayout() {
   const q = headerSearch.trim();
 
   if (!q) {
-    navigate("/catalog");
-    setMenuOpen(false);
-    setSearchFocused(false);
+    searchInputRef.current?.focus();
     return;
   }
 
@@ -470,6 +469,7 @@ export default function CustomerLayout() {
                 style={{ margin: 0 }}
               >
                 <input
+                  ref={searchInputRef}
                   type="text"
                   placeholder="Search furniture..."
                   value={headerSearch}
