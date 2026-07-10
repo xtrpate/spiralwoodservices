@@ -1,6 +1,14 @@
 // controllers/customer/customer.orders.js
 const db = require("../../config/db"); // Uses the unified db config
 const axios = require("axios");
+const { isValidPositiveInteger } = require("../../utils/validators");
+
+/* ── Standard checkout constants ── */
+const ALLOWED_PAYMENT_METHODS = ["cod", "cop", "paymongo"];
+const MAX_ITEM_QUANTITY = 1000; // sanity ceiling, not a business limit
+
+const roundMoney = (value) =>
+  Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
 
 /* ── Get Settings (Payment Info) ── */
 exports.getSettings = async (req, res) => {
@@ -32,20 +40,180 @@ exports.createOrder = async (req, res) => {
       delivery_address,
       payment_method,
       notes,
-      subtotal,
-      total,
     } = req.body;
+    // NOTE: client-submitted unit_price, subtotal, total, and product_name
+    // are intentionally never read from req.body — the server recomputes
+    // all of these from the database below.
 
-    const items = JSON.parse(itemsRaw);
-    if (!items?.length) {
+    let items;
+    try {
+      items = JSON.parse(itemsRaw);
+    } catch {
+      await conn.rollback();
+      return res.status(400).json({ message: "Invalid items payload." });
+    }
+
+    if (!Array.isArray(items) || items.length === 0) {
       await conn.rollback();
       return res.status(400).json({ message: "Cart is empty." });
     }
 
-    if (!name || !phone || !payment_method) {
+    if (!name || !String(name).trim() || !phone || !String(phone).trim()) {
       await conn.rollback();
       return res.status(400).json({ message: "Missing required fields." });
     }
+
+    const normalizedPaymentMethod = String(payment_method || "")
+      .trim()
+      .toLowerCase();
+
+    if (!ALLOWED_PAYMENT_METHODS.includes(normalizedPaymentMethod)) {
+      await conn.rollback();
+      return res.status(400).json({ message: "Invalid payment method." });
+    }
+
+    // COD is a delivery order, so an address is required to actually
+    // deliver it. COP is pickup, so no address is required.
+    const cleanDeliveryAddress = String(delivery_address || "").trim();
+    if (normalizedPaymentMethod === "cod" && !cleanDeliveryAddress) {
+      await conn.rollback();
+      return res.status(400).json({
+        message: "Delivery address is required for Cash on Delivery orders.",
+      });
+    }
+
+    /* ── Step 1: validate each raw line's shape, then merge duplicate
+       lines (same product_id + variation_id) so stock is checked against
+       the TOTAL requested quantity — not per line. Without this merge,
+       two lines of 3 units each (stock = 5) would each pass a per-line
+       check of "3 <= 5" while actually requesting 6 units combined. ── */
+    const mergedItemsMap = new Map();
+
+    for (const rawItem of items) {
+      const productId = Number(rawItem?.product_id);
+      const variationId = rawItem?.variation_id
+        ? Number(rawItem.variation_id)
+        : null;
+
+      if (!Number.isInteger(productId) || productId <= 0) {
+        await conn.rollback();
+        return res.status(400).json({ message: "Invalid product in cart." });
+      }
+
+      if (!isValidPositiveInteger(rawItem?.quantity)) {
+        await conn.rollback();
+        return res.status(400).json({
+          message: "Quantity must be a whole number greater than 0.",
+        });
+      }
+
+      const qty = Number(rawItem.quantity);
+      const mergeKey = `${productId}_${variationId ?? "none"}`;
+      const existing = mergedItemsMap.get(mergeKey);
+
+      mergedItemsMap.set(mergeKey, {
+        product_id: productId,
+        variation_id: variationId,
+        quantity: (existing?.quantity || 0) + qty,
+      });
+    }
+
+    /* ── Step 2: validate + price each merged (deduplicated) line from
+       the database (never trust the client). ── */
+    const validatedItems = [];
+
+    for (const {
+      product_id: productId,
+      variation_id: variationId,
+      quantity: qty,
+    } of mergedItemsMap.values()) {
+      if (qty > MAX_ITEM_QUANTITY) {
+        await conn.rollback();
+        return res.status(400).json({
+          message: `Quantity per item cannot exceed ${MAX_ITEM_QUANTITY}.`,
+        });
+      }
+
+      // Lock the row for this transaction so two customers checking out
+      // at the same time can't both oversell the same stock.
+      const [productRows] = await conn.query(
+        `SELECT id, name, online_price, stock, is_published
+         FROM products
+         WHERE id = ?
+         LIMIT 1
+         FOR UPDATE`,
+        [productId],
+      );
+
+      const product = productRows[0];
+
+      if (!product || Number(product.is_published) !== 1) {
+        await conn.rollback();
+        return res.status(400).json({
+          message: "One of the items in your cart is no longer available.",
+        });
+      }
+
+      let unitPrice = Number(product.online_price || 0);
+      let availableStock = Number(product.stock || 0);
+      let displayName = product.name;
+
+      if (variationId !== null) {
+        if (!Number.isInteger(variationId) || variationId <= 0) {
+          await conn.rollback();
+          return res.status(400).json({ message: "Invalid product variation." });
+        }
+
+        const [variationRows] = await conn.query(
+          `SELECT id, product_id, variation_name, variation_type, variation_value, selling_price, stock
+           FROM product_variations
+           WHERE id = ? AND product_id = ?
+           LIMIT 1
+           FOR UPDATE`,
+          [variationId, productId],
+        );
+
+        const variation = variationRows[0];
+
+        if (!variation) {
+          await conn.rollback();
+          return res.status(400).json({
+            message:
+              "One of the selected product variations is no longer available.",
+          });
+        }
+
+        unitPrice = Number(variation.selling_price || 0);
+        availableStock = Number(variation.stock || 0);
+        displayName = `${product.name} - ${
+          variation.variation_name ||
+          variation.variation_value ||
+          variation.variation_type ||
+          "Variant"
+        }`;
+      }
+
+      if (qty > availableStock) {
+        await conn.rollback();
+        return res.status(400).json({
+          message: `Insufficient stock for "${displayName}". Only ${availableStock} left.`,
+        });
+      }
+
+      validatedItems.push({
+        product_id: productId,
+        variation_id: variationId,
+        product_name: displayName,
+        quantity: qty,
+        unit_price: unitPrice,
+        item_subtotal: roundMoney(unitPrice * qty),
+      });
+    }
+
+    const subtotal = roundMoney(
+      validatedItems.reduce((sum, item) => sum + item.item_subtotal, 0),
+    );
+    const total = subtotal; // no tax/discount in standard checkout currently
 
     /* Generate order number: SWS-YYYYMMDD-XXXX */
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
@@ -53,14 +221,13 @@ exports.createOrder = async (req, res) => {
     const order_number = `SWS-${dateStr}-${rand}`;
 
     /* Payment status logic */
-    const payment_status = ["cod", "cop"].includes(payment_method)
+    const payment_status = ["cod", "cop"].includes(normalizedPaymentMethod)
       ? "unpaid"
       : "partial";
 
     const proof_path = req.file ? `uploads/proofs/${req.file.filename}` : null;
 
     /* Insert order */
-    // ── FIXED: Switched conn.execute to conn.query ──
     const [orderRes] = await conn.query(
       `INSERT INTO orders
         (order_number, customer_id, type, order_type, status,
@@ -71,26 +238,23 @@ exports.createOrder = async (req, res) => {
       [
         order_number,
         req.user.id,
-        payment_method,
+        normalizedPaymentMethod,
         payment_status,
         proof_path,
-        delivery_address || "",
-        name,
-        phone,
+        cleanDeliveryAddress,
+        String(name).trim(),
+        String(phone).trim(),
         notes || "",
-        parseFloat(subtotal),
-        parseFloat(total),
+        subtotal,
+        total,
       ],
     );
 
     const order_id = orderRes.insertId;
 
-    /* Insert order items + deduct stock */
-    for (const item of items) {
-      const unit_price = parseFloat(item.unit_price);
-
-      // ── FIXED: Removed 'subtotal' from the column list and values ──
-      // MySQL will calculate this automatically because it is a generated column.
+    /* Insert order items + deduct stock — only reached after every item
+       above passed product/variation/stock validation. */
+    for (const item of validatedItems) {
       await conn.query(
         `INSERT INTO order_items
           (order_id, product_id, variation_id,
@@ -99,25 +263,26 @@ exports.createOrder = async (req, res) => {
         [
           order_id,
           item.product_id,
-          item.variation_id || null,
+          item.variation_id,
           item.product_name,
           item.quantity,
-          unit_price,
+          item.unit_price,
         ],
       );
 
-      /* Deduct stock */
+      /* Deduct stock — safe to subtract directly (no GREATEST/floor)
+         because availability was already confirmed above. */
       if (item.variation_id) {
         await conn.query(
           `UPDATE product_variations
-           SET stock = GREATEST(0, stock - ?)
+           SET stock = stock - ?
            WHERE id = ?`,
           [item.quantity, item.variation_id],
         );
       } else {
         await conn.query(
           `UPDATE products
-           SET stock = GREATEST(0, stock - ?)
+           SET stock = stock - ?
            WHERE id = ?`,
           [item.quantity, item.product_id],
         );
@@ -138,7 +303,7 @@ exports.createOrder = async (req, res) => {
 
     await conn.commit();
 
-    if (payment_method === "paymongo") {
+    if (normalizedPaymentMethod === "paymongo") {
       try {
         // 👉 NEW: Fetch the customer's email from the database
         const [[userRecord]] = await conn.query(

@@ -51,9 +51,20 @@ function isValidEmail(value) {
   return emailPattern.test(trimmed);
 }
 
+// Unlike isValidNonNegativeInteger above, blank/undefined/null is treated
+// as INVALID here — this is meant for required fields like order item
+// quantity, where "missing" and "zero" should both be rejected. Rejects
+// negative numbers, zero, decimals (e.g. 1.5), and non-numeric strings.
+function isValidPositiveInteger(value) {
+  if (value === undefined || value === null || value === "") return false;
+  const num = Number(value);
+  return !isNaN(num) && isFinite(num) && Number.isInteger(num) && num > 0;
+}
+
 module.exports = {
   isValidNonNegativeNumber,
   isValidNonNegativeInteger,
+  isValidPositiveInteger,
   isNonEmptyString,
   isValidUnitLabel,
   isValidPhoneNumber,
