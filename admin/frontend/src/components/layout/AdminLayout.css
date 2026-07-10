@@ -1,0 +1,125 @@
+/* src/components/layout/AdminLayout.css
+   Responsive layer for the admin/staff shell (AdminLayout.jsx).
+
+   Design intent:
+   - Desktop (>=1024px): unchanged. All sizing above this width still comes
+     from AdminLayout.jsx's existing inline styles — this file adds nothing
+     visible at desktop widths.
+   - Tablet/Mobile (<=1023px): the sidebar becomes a fixed, off-canvas
+     drawer (hidden by default, slides in on hamburger tap) instead of a
+     permanent 240px/64px column eating the viewport.
+
+   Breakpoints used project-wide for this pass: 1023px (tablet ceiling),
+   767px (phone ceiling), 480px (small phone). */
+
+/* Mobile-only controls are hidden by default (desktop-first safety net —
+   even if this file fails to load for some reason, nothing new appears). */
+.wisdom-hamburger-btn,
+.wisdom-sidebar-close {
+  display: none;
+}
+
+.wisdom-sidebar-overlay {
+  display: none;
+}
+
+@media (max-width: 1023px) {
+  .wisdom-admin-shell {
+    overflow-x: hidden;
+  }
+
+  /* Sidebar becomes a fixed off-canvas drawer. The `width` !important is
+     the one deliberate override in this file: AdminLayout.jsx sets an
+     inline `width: open ? 240 : 64` for the desktop collapse feature,
+     and inline styles otherwise always beat CSS. Below 1023px the drawer
+     is always either fully open (280px) or fully hidden
+     (translateX(-100%)) — the desktop collapse width no longer applies. */
+  .wisdom-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    width: 280px !important;
+    max-width: 84vw;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    z-index: 1200;
+  }
+
+  .wisdom-sidebar.mobile-open {
+    transform: translateX(0);
+  }
+
+  /* Desktop collapse arrow doesn't apply to an off-canvas drawer. */
+  .wisdom-sidebar-collapse-toggle {
+    display: none;
+  }
+
+  .wisdom-sidebar-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    flex-shrink: 0;
+    border: 1px solid #3f3f46;
+    background: transparent;
+    color: #e5e7eb;
+    border-radius: 8px;
+    font-size: 16px;
+    cursor: pointer;
+  }
+
+  .wisdom-sidebar-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 1190;
+  }
+
+  .wisdom-hamburger-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    flex-shrink: 0;
+    margin-right: auto;
+    border: 1px solid #d4d4d8;
+    background: #ffffff;
+    color: #18181b;
+    border-radius: 8px;
+    font-size: 18px;
+    cursor: pointer;
+  }
+
+  /* Topbar: hamburger pushes the user badge/logout group to the right
+     instead of everything being right-aligned with no menu trigger. */
+  .wisdom-admin-topbar {
+    padding: 10px 14px !important;
+    flex-wrap: wrap;
+    gap: 10px !important;
+  }
+
+  .wisdom-admin-user-badge {
+    font-size: 12px !important;
+  }
+
+  main {
+    padding: 16px !important;
+  }
+}
+
+@media (max-width: 767px) {
+  .wisdom-admin-user-badge span {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .wisdom-sidebar {
+    width: 88vw !important;
+    max-width: 320px;
+  }
+}

@@ -1113,6 +1113,7 @@ export default function CustomerLayout() {
             </div>
 
             <div
+              className="cust-auth-overlay"
               style={{
                 position: "fixed",
                 inset: 0,
