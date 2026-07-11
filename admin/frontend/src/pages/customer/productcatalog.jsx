@@ -442,12 +442,12 @@ export default function ProductCatalog() {
       <div className="premium-toast-container">
         {toastMsg && (
           <div className={`premium-toast ${isHiding ? "hiding" : ""}`}>
-            <CheckCircle2 size={20} color="#10b981" />
+            <CheckCircle2 size={20} color="#111111" />
             <span>{toastMsg}</span>
           </div>
         )}
       </div>
-      
+
       <div className="catalog-breadcrumbs">
         <button type="button" onClick={() => navigate("/")}>
           Home

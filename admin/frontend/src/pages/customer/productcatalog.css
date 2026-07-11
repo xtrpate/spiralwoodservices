@@ -1099,3 +1099,47 @@
 .product-skeleton {
   border-radius: 0 !important;
 }
+
+/* ── PREMIUM TOAST NOTIFICATION ── */
+.premium-toast-container {
+  position: fixed;
+  bottom: 32px; /* 👉 Moved from top to bottom */
+  right: 24px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column-reverse; /* 👉 Stacks multiple toasts upwards */
+  gap: 10px;
+  pointer-events: none; 
+}
+
+.premium-toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb; /* 👉 Subtle structure instead of heavy green line */
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.12);
+  padding: 14px 20px;
+  border-radius: 8px;
+  color: #111111;
+  font-weight: 600;
+  font-size: 14px;
+  pointer-events: auto;
+  
+  transform: translateX(120%);
+  animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.premium-toast.hiding {
+  animation: fadeOutRight 0.3s ease-in forwards;
+}
+
+@keyframes slideInRight {
+  0% { transform: translateX(120%); opacity: 0; }
+  100% { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes fadeOutRight {
+  0% { transform: translateX(0); opacity: 1; }
+  100% { transform: translateX(120%); opacity: 0; } /* 👉 Ensure it slides completely off-screen */
+}
