@@ -10,6 +10,9 @@ require("dotenv").config();
 const OTP_EXPIRY_MINUTES = 15;
 const RESET_OTP_EXPIRY_MINUTES = 15;
 
+const generateOtp = () =>
+  Math.floor(100000 + Math.random() * 900000).toString();
+
 /* ── Brevo API Setup for Registration OTP ── */
 const sendOtpEmail = async (email, otp, name) => {
   try {
