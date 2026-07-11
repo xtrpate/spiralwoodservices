@@ -99,6 +99,11 @@ export default function RegisterPage() {
       setError(
         err.response?.data?.message || "Registration failed. Please try again.",
       );
+      
+      // reset captcha on error
+      if (recaptchaRef.current) recaptchaRef.current.reset();
+      setCaptchaToken("");
+
     } finally {
       setLoading(false);
     }
@@ -543,6 +548,7 @@ export default function RegisterPage() {
 
             <div style={{ margin: "14px 0" }} className="recaptcha-wrap">
               <ReCAPTCHA
+                ref={recaptchaRef}
                 sitekey={process.env.REACT_APP_RECAPTCHA_SITE_KEY}
                 onChange={(token) => setCaptchaToken(token || "")}
                 onExpired={() => setCaptchaToken("")}
