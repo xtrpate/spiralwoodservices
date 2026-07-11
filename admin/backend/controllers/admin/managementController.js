@@ -403,9 +403,145 @@ exports.deleteUser = async (req, res) => {
 // GET /api/audit-logs?limit=50
 // Lets admins view recent audit trail entries from the app itself,
 // without needing direct database access.
+// ── Audit Logs: shared query-param validation helpers ──
+const parsePositiveInt = (value) => {
+  if (value === undefined || value === null) return null;
+  const str = Array.isArray(value) ? String(value[0]) : String(value).trim();
+  if (!/^\d+$/.test(str)) return null;
+  const num = Number(str);
+  if (!Number.isSafeInteger(num)) return null;
+  return num > 0 ? num : null;
+};
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const isValidDateString = (str) => {
+  if (!DATE_RE.test(str)) return false;
+  const [y, m, d] = str.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  // Guards against JS auto-rolling invalid dates (e.g. 2026-02-30 -> Mar 2)
+  return (
+    dt.getUTCFullYear() === y &&
+    dt.getUTCMonth() + 1 === m &&
+    dt.getUTCDate() === d
+  );
+};
+
+const AUDIT_DEFAULT_PAGE = 1;
+const AUDIT_DEFAULT_LIMIT = 20;
+const AUDIT_MAX_LIMIT = 100;
+
 exports.getAuditLogs = async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    let page = parsePositiveInt(req.query.page) ?? AUDIT_DEFAULT_PAGE;
+    let limit = parsePositiveInt(req.query.limit) ?? AUDIT_DEFAULT_LIMIT;
+    if (limit > AUDIT_MAX_LIMIT) limit = AUDIT_MAX_LIMIT;
+
+    // Guard the multiplied offset separately — a page value that is a safe
+    // integer on its own can still produce an unsafe offset once multiplied
+    // by limit (e.g. page near Number.MAX_SAFE_INTEGER).
+    let offset = (page - 1) * limit;
+    if (!Number.isSafeInteger(offset)) {
+      page = AUDIT_DEFAULT_PAGE;
+      offset = 0;
+    }
+
+    const rawSearch =
+      typeof req.query.search === "string" ? req.query.search.trim() : "";
+    const rawAction =
+      typeof req.query.action === "string" ? req.query.action.trim() : "";
+    const rawTableName =
+      typeof req.query.table_name === "string"
+        ? req.query.table_name.trim()
+        : "";
+    const rawDateFrom =
+      typeof req.query.date_from === "string" ? req.query.date_from.trim() : "";
+    const rawDateTo =
+      typeof req.query.date_to === "string" ? req.query.date_to.trim() : "";
+
+    if (rawDateFrom && !isValidDateString(rawDateFrom)) {
+      return res.status(400).json({
+        message: "Invalid date_from. Use YYYY-MM-DD format.",
+      });
+    }
+    if (rawDateTo && !isValidDateString(rawDateTo)) {
+      return res.status(400).json({
+        message: "Invalid date_to. Use YYYY-MM-DD format.",
+      });
+    }
+    if (rawDateFrom && rawDateTo && rawDateFrom > rawDateTo) {
+      return res.status(400).json({
+        message: "date_from cannot be later than date_to.",
+      });
+    }
+
+    // user_id: absent/empty is ignored, but a PROVIDED-and-invalid value is
+    // rejected outright — silently ignoring it would risk returning every
+    // admin's logs when the caller believed a user filter was applied.
+    const rawUserId = req.query.user_id;
+    const userIdProvided =
+      rawUserId !== undefined &&
+      rawUserId !== null &&
+      String(Array.isArray(rawUserId) ? rawUserId[0] : rawUserId).trim() !== "";
+    let userIdFilter = null;
+    if (userIdProvided) {
+      userIdFilter = parsePositiveInt(rawUserId);
+      if (userIdFilter === null) {
+        return res.status(400).json({
+          message: "Invalid user_id. Use a positive integer.",
+        });
+      }
+    }
+
+    const where = ["1=1"];
+    const params = [];
+
+    if (rawSearch) {
+      const likeValue = `%${rawSearch}%`;
+      if (/^\d+$/.test(rawSearch)) {
+        where.push(
+          "(u.name LIKE ? OR u.email LIKE ? OR al.action LIKE ? OR al.table_name LIKE ? OR al.record_id = ?)",
+        );
+        params.push(likeValue, likeValue, likeValue, likeValue, parseInt(rawSearch, 10));
+      } else {
+        where.push(
+          "(u.name LIKE ? OR u.email LIKE ? OR al.action LIKE ? OR al.table_name LIKE ?)",
+        );
+        params.push(likeValue, likeValue, likeValue, likeValue);
+      }
+    }
+    if (rawAction) {
+      where.push("al.action = ?");
+      params.push(rawAction);
+    }
+    if (rawTableName) {
+      where.push("al.table_name = ?");
+      params.push(rawTableName);
+    }
+    if (userIdFilter !== null) {
+      where.push("al.user_id = ?");
+      params.push(userIdFilter);
+    }
+    if (rawDateFrom) {
+      where.push("al.created_at >= ?");
+      params.push(`${rawDateFrom} 00:00:00`);
+    }
+    if (rawDateTo) {
+      where.push("al.created_at <= ?");
+      params.push(`${rawDateTo} 23:59:59`);
+    }
+
+    const whereSql = where.join(" AND ");
+
+    const [[{ total }]] = await pool.query(
+      `SELECT COUNT(*) AS total
+       FROM audit_logs al
+       LEFT JOIN users u ON u.id = al.user_id
+       WHERE ${whereSql}`,
+      params,
+    );
+
+    const totalNum = Number(total) || 0;
+    const totalPages = totalNum === 0 ? 0 : Math.ceil(totalNum / limit);
 
     const [rows] = await pool.query(
       `SELECT
@@ -421,12 +557,31 @@ exports.getAuditLogs = async (req, res) => {
          u.email AS user_email
        FROM audit_logs al
        LEFT JOIN users u ON u.id = al.user_id
+       WHERE ${whereSql}
        ORDER BY al.created_at DESC, al.id DESC
-       LIMIT ?`,
-      [limit],
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset],
     );
 
-    res.json({ logs: rows });
+    res.json({
+      logs: rows,
+      pagination: {
+        page,
+        limit,
+        total: totalNum,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPreviousPage: page > 1,
+      },
+      filters: {
+        search: rawSearch,
+        action: rawAction,
+        table_name: rawTableName,
+        user_id: userIdFilter,
+        date_from: rawDateFrom,
+        date_to: rawDateTo,
+      },
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
