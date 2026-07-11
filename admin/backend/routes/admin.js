@@ -192,19 +192,54 @@ router.patch(
 // INVENTORY – RAW MATERIALS
 // ══════════════════════════════════════════════════════════════════════════════
 router.get("/inventory/raw", adminStaff, inventory.getRawMaterials);
-router.post("/inventory/raw", adminOnly, inventory.createRawMaterial);
-router.put("/inventory/raw/:id", adminOnly, inventory.updateRawMaterial);
-router.delete("/inventory/raw/:id", adminOnly, inventory.deleteRawMaterial);
+router.post(
+  "/inventory/raw",
+  adminOnly,
+  logAction("create_raw_material", "raw_materials"),
+  inventory.createRawMaterial,
+);
+router.put(
+  "/inventory/raw/:id",
+  adminOnly,
+  logAction("update_raw_material", "raw_materials"),
+  inventory.updateRawMaterial,
+);
+router.delete(
+  "/inventory/raw/:id",
+  adminOnly,
+  logAction("delete_raw_material", "raw_materials"),
+  inventory.deleteRawMaterial,
+);
 
 // SUPPLIERS
 router.get("/suppliers", adminStaff, inventory.getSuppliers);
-router.post("/suppliers", adminOnly, inventory.createSupplier);
-router.put("/suppliers/:id", adminOnly, inventory.updateSupplier);
-router.delete("/suppliers/:id", adminOnly, inventory.deleteSupplier);
+router.post(
+  "/suppliers",
+  adminOnly,
+  logAction("create_supplier", "suppliers"),
+  inventory.createSupplier,
+);
+router.put(
+  "/suppliers/:id",
+  adminOnly,
+  logAction("update_supplier", "suppliers"),
+  inventory.updateSupplier,
+);
+router.delete(
+  "/suppliers/:id",
+  adminOnly,
+  logAction("delete_supplier", "suppliers"),
+  inventory.deleteSupplier,
+);
 
 // STOCK MOVEMENTS
 router.get("/inventory/movements", adminStaff, inventory.getStockMovements);
-router.post("/inventory/movements", adminStaff, inventory.createStockMovement);
+router.post(
+  "/inventory/movements",
+  adminStaff,
+  logAction("create_stock_movement", "stock_movements"),
+  inventory.createStockMovement,
+);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // BLUEPRINTS
