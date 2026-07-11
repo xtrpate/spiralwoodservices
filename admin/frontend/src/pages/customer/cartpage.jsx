@@ -17,6 +17,7 @@ import {
   Package,
   AlertCircle,
   ChevronRight,
+  CheckCircle2,
 } from "lucide-react";
 import { buildAssetUrl } from "../../services/api";
 import { useCart } from "./cartcontext";
@@ -58,6 +59,8 @@ export default function CartPage() {
   const customerUser = user?.role === "customer" ? user : null;
   const { cart, updateQty, removeItem, clearCart } = useCart();
   const [itemToDelete, setItemToDelete] = useState(null);
+  const [toastMsg, setToastMsg] = useState("");
+  const [isHiding, setIsHiding] = useState(false);
 
   const [selected, setSelected] = useState(new Set());
   const [checkoutError, setCheckoutError] = useState("");
@@ -80,6 +83,19 @@ export default function CartPage() {
     const timer = setTimeout(() => setCheckoutError(""), 3500);
     return () => clearTimeout(timer);
   }, [checkoutError]);
+
+  useEffect(() => {
+    if (!toastMsg) return;
+    const hideTimer = setTimeout(() => setIsHiding(true), 2700);
+    const removeTimer = setTimeout(() => {
+      setToastMsg("");
+      setIsHiding(false);
+    }, 3000);
+    return () => {
+      clearTimeout(hideTimer);
+      clearTimeout(removeTimer);
+    };
+  }, [toastMsg]);
 
   const toggleItem = (key) => {
     setSelected((prev) => {
@@ -176,6 +192,15 @@ export default function CartPage() {
       ? "Custom / blueprint items follow quotation-based checkout."
       : "Shipping and final totals will be confirmed during checkout.";
 
+  <div className="premium-toast-container">
+    {toastMsg && (
+      <div className={`premium-toast ${isHiding ? "hiding" : ""}`}>
+        <CheckCircle2 size={20} color="#111111" />
+        <span>{toastMsg}</span>
+      </div>
+    )}
+  </div>;
+
   if (cart.length === 0) {
     return (
       <div className="fm-cart-shell">
@@ -202,7 +227,7 @@ export default function CartPage() {
           </div>
           <h2>Your cart is currently empty</h2>
           <p>
-            Looks like you haven't added anything yet. Discover our premium 
+            Looks like you haven't added anything yet. Discover our premium
             ready-made furniture or start a custom blueprint design.
           </p>
 
@@ -301,13 +326,13 @@ export default function CartPage() {
                   <div className="fm-cart-product-cell">
                     <div className="fm-cart-product-top">
                       <button
-  type="button"
-  className="fm-cart-remove-circle"
-  onClick={() => setItemToDelete(item)}
-  aria-label={`Remove ${item.base_blueprint_title || item.product_name}`}
->
-  <Trash2 size={14} />
-</button>
+                        type="button"
+                        className="fm-cart-remove-circle"
+                        onClick={() => setItemToDelete(item)}
+                        aria-label={`Remove ${item.base_blueprint_title || item.product_name}`}
+                      >
+                        <Trash2 size={14} />
+                      </button>
 
                       <input
                         type="checkbox"
@@ -430,32 +455,41 @@ export default function CartPage() {
           </div>
 
           {itemToDelete && (
-  <div className="fm-modal-overlay">
-    <div className="fm-modal-card">
-      <h3>Remove Item</h3>
-      <p>Are you sure you want to remove "{itemToDelete.base_blueprint_title || itemToDelete.product_name}" from your cart?</p>
-      <div className="fm-modal-actions">
-        <button 
-          type="button" 
-          className="fm-modal-btn secondary" 
-          onClick={() => setItemToDelete(null)}
-        >
-          No
-        </button>
-        <button 
-          type="button" 
-          className="fm-modal-btn primary" 
-          onClick={() => {
-            removeItem(itemToDelete.key);
-            setItemToDelete(null);
-          }}
-        >
-          Yes
-        </button>
-      </div>
-    </div>
-  </div>
-)}
+            <div className="fm-modal-overlay">
+              <div className="fm-modal-card">
+                <h3>Remove Item</h3>
+                <p>
+                  Are you sure you want to remove "
+                  {itemToDelete.base_blueprint_title ||
+                    itemToDelete.product_name}
+                  " from your cart?
+                </p>
+                <div className="fm-modal-actions">
+                  <button
+                    type="button"
+                    className="fm-modal-btn secondary"
+                    onClick={() => setItemToDelete(null)}
+                  >
+                    No
+                  </button>
+                  <button
+                    type="button"
+                    className="fm-modal-btn primary"
+                    onClick={() => {
+                      const itemName =
+                        itemToDelete.base_blueprint_title ||
+                        itemToDelete.product_name;
+                      removeItem(itemToDelete.key);
+                      setItemToDelete(null);
+                      setToastMsg(`"${itemName}" has been removed.`);
+                    }}
+                  >
+                    Yes
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {selected.size > 0 && selected.size < cart.length && (
             <div className="fm-cart-selection-note">
