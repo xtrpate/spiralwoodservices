@@ -33,6 +33,7 @@ export default function RegisterPage() {
   const [otpLoading, setOtpLoading] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
   const otpRefs = useRef([]);
+  const recaptchaRef = useRef(null);
 
   const [form, setForm] = useState({
     first_name: "",
