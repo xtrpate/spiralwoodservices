@@ -148,6 +148,16 @@ exports.createRawMaterial = async (req, res) => {
       ],
     );
 
+    const [[savedMaterial]] = await pool.query(
+      `SELECT id, name, category_id, unit, quantity, reorder_point, unit_cost, supplier_id, stock_status
+       FROM raw_materials WHERE id = ?`,
+      [r.insertId],
+    );
+
+    if (savedMaterial) {
+      req.auditRecord = { id: r.insertId, old: null, new: savedMaterial };
+    }
+
     res.status(201).json({ message: "Raw material created.", id: r.insertId });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -211,7 +221,15 @@ exports.updateRawMaterial = async (req, res) => {
 
     const status = computeStockStatus(qty, reorderPoint);
 
-    await pool.query(
+    const materialId = parseInt(req.params.id);
+
+    const [[before]] = await pool.query(
+      `SELECT id, name, category_id, unit, quantity, reorder_point, unit_cost, supplier_id, stock_status
+       FROM raw_materials WHERE id = ?`,
+      [materialId],
+    );
+
+    const [updateResult] = await pool.query(
       `UPDATE raw_materials
        SET name=?, category_id=?, unit=?, quantity=?,
            reorder_point=?, unit_cost=?, supplier_id=?, stock_status=?
@@ -225,9 +243,21 @@ exports.updateRawMaterial = async (req, res) => {
         unitCost,
         supplier_id ? parseInt(supplier_id) : null,
         status,
-        parseInt(req.params.id),
+        materialId,
       ],
     );
+
+    if (before && updateResult.affectedRows > 0) {
+      const [[after]] = await pool.query(
+        `SELECT id, name, category_id, unit, quantity, reorder_point, unit_cost, supplier_id, stock_status
+         FROM raw_materials WHERE id = ?`,
+        [materialId],
+      );
+
+      if (after) {
+        req.auditRecord = { id: materialId, old: before, new: after };
+      }
+    }
 
     res.json({ message: "Raw material updated." });
   } catch (err) {
@@ -237,9 +267,27 @@ exports.updateRawMaterial = async (req, res) => {
 
 exports.deleteRawMaterial = async (req, res) => {
   try {
-    await pool.query("DELETE FROM raw_materials WHERE id = ?", [
-      parseInt(req.params.id),
-    ]);
+    const materialId = parseInt(req.params.id);
+
+    const [[before]] = await pool.query(
+      `SELECT id, name, category_id, unit, quantity, reorder_point, unit_cost, supplier_id, stock_status
+       FROM raw_materials WHERE id = ?`,
+      [materialId],
+    );
+
+    const [deleteResult] = await pool.query(
+      "DELETE FROM raw_materials WHERE id = ?",
+      [materialId],
+    );
+
+    if (before && deleteResult.affectedRows > 0) {
+      req.auditRecord = {
+        id: materialId,
+        old: before,
+        new: { action: "deleted" },
+      };
+    }
+
     res.json({ message: "Raw material deleted." });
   } catch (err) {
     if (err.code === "ER_ROW_IS_REFERENCED_2") {
@@ -440,6 +488,24 @@ exports.createStockMovement = async (req, res) => {
       );
 
       await conn.commit();
+
+      req.auditRecord = {
+        id: r.insertId,
+        old: null,
+        new: {
+          material_id: parseInt(material_id),
+          product_id: null,
+          type,
+          quantity: movementQty,
+          supplier_id: supplier_id ? parseInt(supplier_id) : null,
+          order_id: order_id ? parseInt(order_id) : null,
+          reference: reference || null,
+          notes: notes || null,
+          previous_stock: currentQty,
+          new_stock: newQty,
+        },
+      };
+
       return res.status(201).json({
         message: "Stock movement recorded.",
         id: r.insertId,
@@ -550,6 +616,8 @@ exports.createStockMovement = async (req, res) => {
       );
 
       // 3) deduct every raw material in BOM
+      const bomDeductions = [];
+
       for (const item of consumptionRows) {
         const newRawQty = item.availableQty - item.requiredQty;
 
@@ -564,7 +632,7 @@ exports.createStockMovement = async (req, res) => {
           ],
         );
 
-        await conn.query(
+        const [autoResult] = await conn.query(
           `INSERT INTO stock_movements
              (material_id, product_id, type, quantity, supplier_id, order_id, reference, notes, created_by)
            VALUES (?,?,?,?,?,?,?,?,?)`,
@@ -582,9 +650,37 @@ exports.createStockMovement = async (req, res) => {
             parseInt(req.user.id),
           ],
         );
+
+        bomDeductions.push({
+          movement_id: autoResult.insertId,
+          material_id: parseInt(item.raw_material_id),
+          material_name: item.material_name,
+          quantity: item.requiredQty,
+          previous_stock: item.availableQty,
+          new_stock: newRawQty,
+        });
       }
 
       await conn.commit();
+
+      req.auditRecord = {
+        id: r.insertId,
+        old: null,
+        new: {
+          material_id: null,
+          product_id: parseInt(product_id),
+          type,
+          quantity: movementQty,
+          supplier_id: supplier_id ? parseInt(supplier_id) : null,
+          order_id: order_id ? parseInt(order_id) : null,
+          reference: reference || null,
+          notes: notes || null,
+          previous_stock: currentProductStock,
+          new_stock: newProductStock,
+          auto_raw_material_deductions: bomDeductions,
+        },
+      };
+
       return res.status(201).json({
         message:
           "Product stock added and raw materials were deducted automatically.",
@@ -631,6 +727,24 @@ exports.createStockMovement = async (req, res) => {
     );
 
     await conn.commit();
+
+    req.auditRecord = {
+      id: r.insertId,
+      old: null,
+      new: {
+        material_id: null,
+        product_id: parseInt(product_id),
+        type,
+        quantity: movementQty,
+        supplier_id: supplier_id ? parseInt(supplier_id) : null,
+        order_id: order_id ? parseInt(order_id) : null,
+        reference: reference || null,
+        notes: notes || null,
+        previous_stock: currentProductStock,
+        new_stock: newProductStock,
+      },
+    };
+
     return res.status(201).json({
       message: "Stock movement recorded.",
       id: r.insertId,
@@ -695,6 +809,16 @@ exports.createSupplier = async (req, res) => {
       "INSERT INTO suppliers (name, address, contact_number, email) VALUES (?,?,?,?)",
       [name, address, contact_number, email],
     );
+
+    const [[savedSupplier]] = await pool.query(
+      "SELECT id, name, address, contact_number, email FROM suppliers WHERE id = ?",
+      [r.insertId],
+    );
+
+    if (savedSupplier) {
+      req.auditRecord = { id: r.insertId, old: null, new: savedSupplier };
+    }
+
     res.status(201).json({ message: "Supplier created.", id: r.insertId });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -730,10 +854,29 @@ exports.updateSupplier = async (req, res) => {
       return res.status(400).json({ message: "Email must be a valid email address." });
     }
 
-    await pool.query(
-      "UPDATE suppliers SET name=?,address=?,contact_number=?,email=? WHERE id=?",
-      [name, address, contact_number, email, parseInt(req.params.id)],
+    const supplierId = parseInt(req.params.id);
+
+    const [[before]] = await pool.query(
+      "SELECT id, name, address, contact_number, email FROM suppliers WHERE id = ?",
+      [supplierId],
     );
+
+    const [updateResult] = await pool.query(
+      "UPDATE suppliers SET name=?,address=?,contact_number=?,email=? WHERE id=?",
+      [name, address, contact_number, email, supplierId],
+    );
+
+    if (before && updateResult.affectedRows > 0) {
+      const [[after]] = await pool.query(
+        "SELECT id, name, address, contact_number, email FROM suppliers WHERE id = ?",
+        [supplierId],
+      );
+
+      if (after) {
+        req.auditRecord = { id: supplierId, old: before, new: after };
+      }
+    }
+
     res.json({ message: "Supplier updated." });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -742,9 +885,26 @@ exports.updateSupplier = async (req, res) => {
 
 exports.deleteSupplier = async (req, res) => {
   try {
-    await pool.query("DELETE FROM suppliers WHERE id = ?", [
-      parseInt(req.params.id),
-    ]);
+    const supplierId = parseInt(req.params.id);
+
+    const [[before]] = await pool.query(
+      "SELECT id, name, address, contact_number, email FROM suppliers WHERE id = ?",
+      [supplierId],
+    );
+
+    const [deleteResult] = await pool.query(
+      "DELETE FROM suppliers WHERE id = ?",
+      [supplierId],
+    );
+
+    if (before && deleteResult.affectedRows > 0) {
+      req.auditRecord = {
+        id: supplierId,
+        old: before,
+        new: { action: "deleted" },
+      };
+    }
+
     res.json({ message: "Supplier deleted." });
   } catch (err) {
     if (err.code === "ER_ROW_IS_REFERENCED_2") {

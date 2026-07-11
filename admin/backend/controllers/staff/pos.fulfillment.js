@@ -356,6 +356,23 @@ exports.createDelivery = async (req, res) => {
       [result.insertId],
     );
 
+    req.auditRecord = {
+      id: result.insertId,
+      old: null,
+      new: {
+        id: delivery?.id ?? result.insertId,
+        order_id: delivery?.order_id ?? orderId,
+        driver_id: delivery?.driver_id ?? driverId,
+        assigned_by: delivery?.assigned_by ?? req.user.id,
+        scheduled_date: delivery?.scheduled_date ?? scheduledDate,
+        status: delivery?.status ?? "scheduled",
+        address_present: Boolean(delivery?.address ?? address),
+        notes_present: Boolean(delivery?.notes ?? finalNotes),
+        signed_receipt_present: false,
+        assigned_at: delivery?.assigned_at ?? null,
+      },
+    };
+
     if (delivery?.signed_receipt) {
       delivery.signed_receipt = signUploadPath(delivery.signed_receipt);
     }
@@ -424,7 +441,7 @@ exports.updateDeliveryStatus = async (req, res) => {
     }
 
     const [[order]] = await conn.query(
-      `SELECT id, order_number, total, payment_status
+      `SELECT id, order_number, total, status, payment_status
        FROM orders
        WHERE id = ?
        LIMIT 1
@@ -743,6 +760,41 @@ exports.updateDeliveryStatus = async (req, res) => {
     );
 
     await conn.commit();
+
+    req.auditRecord = {
+      id: deliveryId,
+      old: {
+        status: currentStatus,
+        driver_id: existing.driver_id,
+        scheduled_date: existing.scheduled_date,
+        delivered_date: existing.delivered_date,
+        notes_present: Boolean(existing.notes),
+        signed_receipt_present: Boolean(existing.signed_receipt),
+      },
+      new: {
+        status: updated?.status ?? requestedStatus,
+        driver_id: updated?.driver_id ?? existing.driver_id,
+        scheduled_date: updated?.scheduled_date ?? existing.scheduled_date,
+        delivered_date: updated?.delivered_date ?? deliveredDate,
+        notes_present_before: Boolean(existing.notes),
+        notes_present_after: Boolean(updated?.notes),
+        notes_changed:
+          (existing.notes ?? null) !== (updated?.notes ?? null),
+        signed_receipt_present: Boolean(nextSignedReceipt),
+        receipt_uploaded_this_update: Boolean(uploadedReceiptPath),
+        order_id: existing.order_id,
+        order_status_before: order.status,
+        order_status_after: nextOrderStatus || order.status,
+        order_payment_status_before: order.payment_status,
+        order_payment_status_after: nextOrderPaymentStatus,
+        payment_transaction_created:
+          isCompletingDeliveryNow && currentBalance > 0.009,
+        payment_collected:
+          isCompletingDeliveryNow && currentBalance > 0.009
+            ? { amount: collectedAmount, method: collectedPaymentMethod }
+            : null,
+      },
+    };
 
     let message = "Delivery updated successfully";
 

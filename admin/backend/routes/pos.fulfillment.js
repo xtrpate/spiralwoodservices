@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
 const { verifyFileSignature } = require("../utils/verifyFileSignature");
+const { logAction } = require("../middleware/auditLog");
 const router = express.Router();
 
 const {
@@ -103,12 +104,18 @@ router.get(
   posFulfillmentController.getDeliveries,
 );
 
-router.post("/deliveries", adminOnly, posFulfillmentController.createDelivery);
+router.post(
+  "/deliveries",
+  adminOnly,
+  logAction("create_delivery", "deliveries"),
+  posFulfillmentController.createDelivery,
+);
 
 router.patch(
   "/deliveries/:id/status",
   deliveryAccess,
   handleReceiptUpload,
+  logAction("update_delivery_status", "deliveries"),
   posFulfillmentController.updateDeliveryStatus,
 );
 

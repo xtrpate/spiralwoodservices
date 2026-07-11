@@ -36,6 +36,7 @@ import WebsiteSettingsPage from "./pages/website/WebsiteSettingsPage";
 import FaqsPage from "./pages/website/FaqsPage";
 import StaticPagesPage from "./pages/website/StaticPagesPage";
 import BackupPage from "./pages/backup/BackupPage";
+import AuditLogsPage from "./pages/audit/AuditLogsPage";
 
 import { CartProvider } from "./pages/customer/cartcontext";
 import { CustomCartProvider } from "./pages/customer/customcartcontext";
@@ -376,6 +377,14 @@ export default function App() {
                   element={
                     <RequireAuth roles={["admin"]}>
                       <BackupPage />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="audit-logs"
+                  element={
+                    <RequireAuth roles={["admin"]}>
+                      <AuditLogsPage />
                     </RequireAuth>
                   }
                 />

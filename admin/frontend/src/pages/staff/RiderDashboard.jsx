@@ -2,6 +2,38 @@ import { useState, useEffect } from "react";
 import api from "../../services/api";
 import { Package, Truck, CheckCircle, MapPin } from "lucide-react";
 
+// Builds a safe Google Maps link: valid finite in-range coords first,
+// then falls back to the text address, or null if neither exists.
+// Guards explicitly against null/undefined BEFORE calling Number() —
+// Number(null) coerces to 0 (a "valid" but wrong coordinate), which
+// is what let null,null through the old Number.isFinite(Number(x)) check.
+const getGoogleMapsHref = (lat, lng, address) => {
+  const hasLat = lat !== null && lat !== undefined && lat !== "";
+  const hasLng = lng !== null && lng !== undefined && lng !== "";
+
+  if (hasLat && hasLng) {
+    const latNum = Number(lat);
+    const lngNum = Number(lng);
+    if (
+      Number.isFinite(latNum) &&
+      Number.isFinite(lngNum) &&
+      latNum >= -90 &&
+      latNum <= 90 &&
+      lngNum >= -180 &&
+      lngNum <= 180
+    ) {
+      return `https://www.google.com/maps/search/?api=1&query=${latNum},${lngNum}`;
+    }
+  }
+
+  const trimmedAddress = String(address || "").trim();
+  if (trimmedAddress) {
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(trimmedAddress)}`;
+  }
+
+  return null;
+};
+
 export default function RiderDashboard() {
   const [stats, setStats] = useState(null);
   const [activeDeliveries, setActiveDeliveries] = useState([]);
@@ -202,7 +234,13 @@ export default function RiderDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {activeDeliveries.map((delivery) => (
+                {activeDeliveries.map((delivery) => {
+                  const mapsHref = getGoogleMapsHref(
+                    delivery.delivery_lat,
+                    delivery.delivery_lng,
+                    delivery.address,
+                  );
+                  return (
                   <tr
                     key={delivery.id}
                     style={{ borderBottom: "1px solid #f4f4f5" }}
@@ -239,18 +277,24 @@ export default function RiderDashboard() {
                         >
                           {delivery.address}
                         </span>
-                        {Number.isFinite(Number(delivery.delivery_lat)) &&
-                          Number.isFinite(Number(delivery.delivery_lng)) && (
-                            <a
-                              href={`https://www.google.com/maps/search/?api=1&query=${delivery.delivery_lat},${delivery.delivery_lng}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              title="Open in Google Maps"
-                              style={{ flexShrink: 0, lineHeight: 0 }}
-                            >
-                              <MapPin size={14} color="#2563eb" />
-                            </a>
-                          )}
+                        {mapsHref ? (
+                          <a
+                            href={mapsHref}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Open in Google Maps"
+                            style={{ flexShrink: 0, lineHeight: 0 }}
+                          >
+                            <MapPin size={14} color="#2563eb" />
+                          </a>
+                        ) : (
+                          <span
+                            title="Location unavailable"
+                            style={{ flexShrink: 0, lineHeight: 0 }}
+                          >
+                            <MapPin size={14} color="#d4d4d8" />
+                          </span>
+                        )}
                       </div>
                     </td>
                     <td style={tdStyle}>
@@ -280,7 +324,8 @@ export default function RiderDashboard() {
                       </span>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

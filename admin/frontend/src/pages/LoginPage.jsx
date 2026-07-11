@@ -45,10 +45,12 @@ export default function LoginPage() {
     e.preventDefault();
     setErrorMessage("");
 
-    if (!captchaToken) {
-      setErrorMessage("Please complete the CAPTCHA verification.");
-      return;
-    }
+    // 🔓 TEMP — reCAPTCHA requirement disabled on login for faster local
+    // testing. RESTORE BEFORE PRODUCTION: uncomment the block below.
+    // if (!captchaToken) {
+    //   setErrorMessage("Please complete the CAPTCHA verification.");
+    //   return;
+    // }
 
     setLoading(true);
 
@@ -178,18 +180,20 @@ export default function LoginPage() {
               </label>
             </div>
 
-            <div style={{ margin: "14px 0" }} className="recaptcha-wrap">
+            {/* 🔓 TEMP — widget hidden while login reCAPTCHA is disabled.
+                RESTORE BEFORE PRODUCTION: uncomment the block below. */}
+            {/* <div style={{ margin: "14px 0" }} className="recaptcha-wrap">
               <ReCAPTCHA
                 sitekey={process.env.REACT_APP_RECAPTCHA_SITE_KEY}
                 onChange={(token) => setCaptchaToken(token || "")}
                 onExpired={() => setCaptchaToken("")}
               />
-            </div>
+            </div> */}
 
             <button
               type="submit"
               className="btn-auth"
-              disabled={loading || !captchaToken}
+              disabled={loading}
             >
               {loading ? (
                 <>

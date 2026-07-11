@@ -117,6 +117,12 @@ const NAV_ITEMS = [
     icon: "🔑",
     roles: ["admin"],
   },
+  {
+    label: "Audit Logs",
+    path: "/admin/audit-logs",
+    icon: "🧾",
+    roles: ["admin"],
+  },
   { section: "Website" },
   {
     label: "Site Settings",
