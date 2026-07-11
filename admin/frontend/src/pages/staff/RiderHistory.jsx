@@ -2,6 +2,38 @@ import { useState, useEffect, useMemo } from "react";
 import api from "../../services/api";
 import { Calendar, MapPin } from "lucide-react";
 
+// Builds a safe Google Maps link: valid finite in-range coords first,
+// then falls back to the text address, or null if neither exists.
+// Guards explicitly against null/undefined BEFORE calling Number() —
+// Number(null) coerces to 0 (a "valid" but wrong coordinate), which
+// is what let null,null through the old Number.isFinite(Number(x)) check.
+const getGoogleMapsHref = (lat, lng, address) => {
+  const hasLat = lat !== null && lat !== undefined && lat !== "";
+  const hasLng = lng !== null && lng !== undefined && lng !== "";
+
+  if (hasLat && hasLng) {
+    const latNum = Number(lat);
+    const lngNum = Number(lng);
+    if (
+      Number.isFinite(latNum) &&
+      Number.isFinite(lngNum) &&
+      latNum >= -90 &&
+      latNum <= 90 &&
+      lngNum >= -180 &&
+      lngNum <= 180
+    ) {
+      return `https://www.google.com/maps/search/?api=1&query=${latNum},${lngNum}`;
+    }
+  }
+
+  const trimmedAddress = String(address || "").trim();
+  if (trimmedAddress) {
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(trimmedAddress)}`;
+  }
+
+  return null;
+};
+
 export default function RiderHistory() {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -200,7 +232,13 @@ export default function RiderHistory() {
               </tr>
             </thead>
             <tbody>
-              {filteredHistory.map((h) => (
+              {filteredHistory.map((h) => {
+                const mapsHref = getGoogleMapsHref(
+                  h.delivery_lat,
+                  h.delivery_lng,
+                  h.address,
+                );
+                return (
                 <tr
                   key={h.delivery_id}
                   style={{ borderBottom: "1px solid #f4f4f5" }}
@@ -258,18 +296,24 @@ export default function RiderHistory() {
                       >
                         {h.address || "No address provided"}
                       </span>
-                      {Number.isFinite(Number(h.delivery_lat)) &&
-                        Number.isFinite(Number(h.delivery_lng)) && (
-                          <a
-                            href={`https://www.google.com/maps/search/?api=1&query=${h.delivery_lat},${h.delivery_lng}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            title="Open in Google Maps"
-                            style={{ flexShrink: 0, lineHeight: 0 }}
-                          >
-                            <MapPin size={12} color="#2563eb" />
-                          </a>
-                        )}
+                      {mapsHref ? (
+                        <a
+                          href={mapsHref}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="Open in Google Maps"
+                          style={{ flexShrink: 0, lineHeight: 0 }}
+                        >
+                          <MapPin size={12} color="#2563eb" />
+                        </a>
+                      ) : (
+                        <span
+                          title="Location unavailable"
+                          style={{ flexShrink: 0, lineHeight: 0 }}
+                        >
+                          <MapPin size={12} color="#d4d4d8" />
+                        </span>
+                      )}
                     </div>
                   </td>
 
@@ -313,7 +357,8 @@ export default function RiderHistory() {
                     </span>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
