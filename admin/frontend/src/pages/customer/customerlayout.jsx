@@ -62,6 +62,7 @@ export default function CustomerLayout() {
   const [isScrolled, setIsScrolled] = useState(false);
   const [activeOrdersCount, setActiveOrdersCount] = useState(0);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
+  const [itemToRemove, setItemToRemove] = useState(null);
 
   // this is for avatar on the navigation bar.
   const [avatarFailed, setAvatarFailed] = useState(false);
@@ -239,7 +240,8 @@ export default function CustomerLayout() {
           entityId: item.id,
           resultType: "template",
           title: item.title,
-          subtitle: item.category_label || item.category || "Customize Template",
+          subtitle:
+            item.category_label || item.category || "Customize Template",
           badge: "Customize",
           imageUrl: item.preview_image_url || item.thumbnail_url || "",
           priceText: "Customize template",
@@ -313,15 +315,15 @@ export default function CustomerLayout() {
   };
 
   const handleHeaderSearch = (e) => {
-  e.preventDefault();
-  const q = headerSearch.trim();
+    e.preventDefault();
+    const q = headerSearch.trim();
 
-  if (!q) {
-    searchInputRef.current?.focus();
-    return;
-  }
+    if (!q) {
+      searchInputRef.current?.focus();
+      return;
+    }
 
-  const productMatches = searchResults.filter(
+    const productMatches = searchResults.filter(
       (item) => item.resultType === "product",
     );
     const templateMatches = searchResults.filter(
@@ -537,7 +539,8 @@ export default function CustomerLayout() {
                         textAlign: "center",
                       }}
                     >
-                      No ready-made products or customize templates found for "{headerSearch}"
+                      No ready-made products or customize templates found for "
+                      {headerSearch}"
                     </div>
                   ) : (
                     searchResults.map((item) => (
@@ -553,7 +556,9 @@ export default function CustomerLayout() {
                             return;
                           }
 
-                          navigate(`/catalog?q=${encodeURIComponent(item.searchValue)}`);
+                          navigate(
+                            `/catalog?q=${encodeURIComponent(item.searchValue)}`,
+                          );
                         }}
                         style={{
                           display: "flex",
@@ -975,7 +980,7 @@ export default function CustomerLayout() {
                     <button
                       type="button"
                       className="cust-mini-cart-remove"
-                      onClick={() => removeItem(item.key)}
+                      onClick={() => setItemToRemove(item)}
                       aria-label={`Remove ${item.product_name}`}
                     >
                       ×
@@ -1110,6 +1115,81 @@ export default function CustomerLayout() {
                   cursor: "pointer",
                   fontWeight: 600,
                   fontSize: "15px",
+                }}
+              >
+                Yes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {itemToRemove && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 10050,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "24px",
+            pointerEvents: "auto",
+          }}
+        >
+          <div
+            style={{
+              width: "100%",
+              maxWidth: "400px",
+              background: "#ffffff",
+              border: "1px solid #e5e7eb",
+              boxShadow: "0 20px 50px rgba(0,0,0,0.16)",
+              padding: "28px",
+            }}
+          >
+            <h3
+              style={{ margin: "0 0 10px", fontSize: "22px", fontWeight: 700 }}
+            >
+              Remove Item
+            </h3>
+            <p
+              style={{ margin: "0 0 24px", color: "#5f5f5f", fontSize: "15px" }}
+            >
+              Are you sure you want to remove "
+              {itemToRemove.base_blueprint_title || itemToRemove.product_name}"
+              from your cart?
+            </p>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: "12px",
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setItemToRemove(null)}
+                style={{
+                  padding: "10px 20px",
+                  border: "1px solid #d1d5db",
+                  background: "white",
+                  cursor: "pointer",
+                }}
+              >
+                No
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  removeItem(itemToRemove.key);
+                  setItemToRemove(null);
+                }}
+                style={{
+                  padding: "10px 20px",
+                  border: "1px solid #111",
+                  background: "#111",
+                  color: "#fff",
+                  cursor: "pointer",
                 }}
               >
                 Yes
