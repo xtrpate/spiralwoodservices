@@ -21,6 +21,8 @@ const ACTION_LABELS = {
   create_stock_movement: "Create Stock Movement",
   create_delivery: "Create Delivery",
   update_delivery_status: "Update Delivery Status",
+  decide_warranty_claim: "Decide Warranty Claim",
+  fulfill_warranty_claim: "Fulfill Warranty Claim",
 };
 
 const KNOWN_ACTIONS = Object.keys(ACTION_LABELS);
@@ -33,6 +35,7 @@ const KNOWN_TABLES = [
   "suppliers",
   "stock_movements",
   "deliveries",
+  "warranties",
 ];
 const LIMIT_OPTIONS = [10, 20, 50, 100];
 
