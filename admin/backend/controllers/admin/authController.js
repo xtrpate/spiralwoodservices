@@ -54,10 +54,12 @@ exports.login = async (req, res) => {
       return res.status(400).json({ message: "Email and password are required." });
     }
 
-    const isHuman = await verifyRecaptcha(recaptcha_token);
-    if (!isHuman) {
-      return res.status(400).json({ message: "Please complete the CAPTCHA verification." });
-    }
+    // 🔓 TEMP — reCAPTCHA check disabled on login for faster local testing.
+    // RESTORE BEFORE PRODUCTION / GOING LIVE: uncomment the block below.
+    // const isHuman = await verifyRecaptcha(recaptcha_token);
+    // if (!isHuman) {
+    //   return res.status(400).json({ message: "Please complete the CAPTCHA verification." });
+    // }
 
     const normalizedEmail = String(email).trim().toLowerCase();
 
