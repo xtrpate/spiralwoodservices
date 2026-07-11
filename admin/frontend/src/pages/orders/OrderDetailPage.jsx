@@ -1,5 +1,5 @@
 // src/pages/orders/OrderDetailPage.jsx – compact polished detail view (Admin)
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import api, { buildAssetUrl } from "../../services/api";
 import toast from "react-hot-toast";
@@ -399,6 +399,8 @@ export default function OrderDetailPage() {
   // producing a confusing error+error+success toast sequence even
   // though the update itself worked correctly.
   const [updatingStatus, setUpdatingStatus] = useState(false);
+  const paymentReviewLockRef = useRef(false);
+  const [reviewingPayment, setReviewingPayment] = useState({ id: null, action: "" });
 
   const [proofPreview, setProofPreview] = useState({
     open: false,
@@ -572,17 +574,30 @@ export default function OrderDetailPage() {
   
 
   const verifyPayment = async (paymentId, action) => {
+    if (paymentReviewLockRef.current) return;
+    paymentReviewLockRef.current = true;
+    setReviewingPayment({ id: paymentId, action });
     try {
       const { data } = await api.post(`/orders/${id}/verify-payment`, {
         payment_id: paymentId,
         action,
       });
       toast.success(data?.message || `Payment ${action}.`);
-      load();
+      await load();
     } catch (err) {
-      toast.error(
-        err?.response?.data?.message || `Failed to mark payment as ${action}.`,
-      );
+      // api.js's shared interceptor already toasts status 400 (generic
+      // message block), 403, 422, 500, and network/no-response errors. It
+      // intentionally does NOT toast 401 (session cleanup/redirect only)
+      // or 404. Only fall back locally for 404, so no failure is ever
+      // shown to the admin twice.
+      if (err?.response?.status === 404) {
+        toast.error(
+          err?.response?.data?.message || `Failed to mark payment as ${action}.`,
+        );
+      }
+    } finally {
+      paymentReviewLockRef.current = false;
+      setReviewingPayment({ id: null, action: "" });
     }
   };
 
@@ -1974,17 +1989,25 @@ export default function OrderDetailPage() {
                                     onClick={() =>
                                       verifyPayment(payment.id, "verified")
                                     }
+                                    disabled={reviewingPayment.id !== null}
                                     style={btnAccept}
                                   >
-                                    Verify
+                                    {reviewingPayment.id === payment.id &&
+                                    reviewingPayment.action === "verified"
+                                      ? "Verifying..."
+                                      : "Verify"}
                                   </button>
                                   <button
                                     onClick={() =>
                                       verifyPayment(payment.id, "rejected")
                                     }
+                                    disabled={reviewingPayment.id !== null}
                                     style={btnDecline}
                                   >
-                                    Reject
+                                    {reviewingPayment.id === payment.id &&
+                                    reviewingPayment.action === "rejected"
+                                      ? "Rejecting..."
+                                      : "Reject"}
                                   </button>
                                 </div>
                               ) : (

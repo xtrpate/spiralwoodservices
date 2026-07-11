@@ -151,6 +151,15 @@ exports.decideClaim = async (req, res) => {
       [decision, adminNote || null, id],
     );
 
+    req.auditRecord = {
+      id,
+      old: { status: currentStatus },
+      new: {
+        status: decision,
+        has_admin_note: Boolean(adminNote),
+      },
+    };
+
     res.json({
       message:
         decision === "approved"
@@ -222,6 +231,16 @@ exports.fulfillClaim = async (req, res) => {
       `,
       [finalReceipt, parseInt(req.user.id), id],
     );
+
+    req.auditRecord = {
+      id,
+      old: { status: currentStatus },
+      new: {
+        status: "fulfilled",
+        has_replacement_receipt: Boolean(finalReceipt),
+        receipt_uploaded_this_update: Boolean(uploadedReceipt),
+      },
+    };
 
     res.json({
       message: "Warranty claim marked as fulfilled successfully.",

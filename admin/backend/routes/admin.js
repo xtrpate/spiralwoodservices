@@ -350,6 +350,7 @@ router.get("/warranty", adminOnly, warrantyController.getClaims);
 router.patch(
   "/warranty/:id/decision",
   adminOnly,
+  logAction("decide_warranty_claim", "warranties"),
   warrantyController.decideClaim,
 );
 
@@ -357,6 +358,7 @@ router.patch(
   "/warranty/:id/fulfill",
   adminOnly,
   replacementUpload,
+  logAction("fulfill_warranty_claim", "warranties"),
   warrantyController.fulfillClaim,
 );
 // ══════════════════════════════════════════════════════════════════════════════
