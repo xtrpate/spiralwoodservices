@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
-import { Search } from "lucide-react";
+import { Search, CheckCircle2 } from "lucide-react";
 import { useNavigate, useLocation } from "react-router-dom";
 
 import api, { buildAssetUrl } from "../../services/api";
 import "./productcatalog.css";
 import { useCart } from "./cartcontext";
+
+
 
 const clampNumber = (value, min, max) => {
   const num = Number(value);
@@ -111,6 +113,29 @@ export default function ProductCatalog() {
   const [cartMsg, setCartMsg] = useState("");
   const [urlMapped, setUrlMapped] = useState(false);
   const [searchFocused, setSearchFocused] = useState(false);
+
+  const [toastMsg, setToastMsg] = useState("");
+  const [isHiding, setIsHiding] = useState(false);
+
+  useEffect(() => {
+    if (!toastMsg) return;
+
+    // Start slide-out animation after 2.7 seconds
+    const hideTimer = setTimeout(() => {
+      setIsHiding(true);
+    }, 2700);
+
+    // Completely remove it from the screen at 3.0 seconds
+    const removeTimer = setTimeout(() => {
+      setToastMsg("");
+      setIsHiding(false);
+    }, 3000);
+
+    return () => {
+      clearTimeout(hideTimer);
+      clearTimeout(removeTimer);
+    };
+  }, [toastMsg]);
 
   const fetchProducts = useCallback(async () => {
     setLoading(true);
@@ -253,6 +278,9 @@ export default function ProductCatalog() {
       image_url: product.image_url || null,
     });
 
+    setToastMsg(`"${product.name}" successfully added to your cart!`);
+    setIsHiding(false);
+
     
   };
 
@@ -303,7 +331,8 @@ export default function ProductCatalog() {
       image_url: selected.image_url || null,
     });
 
-    
+    setToastMsg('"{$name}" successfully added to your cart!');
+    setIsHiding(false);    
     setSelected(null);
   };
 
@@ -409,6 +438,16 @@ export default function ProductCatalog() {
 
   return (
     <div className="catalog-page-shell">
+
+      <div className="premium-toast-container">
+        {toastMsg && (
+          <div className={`premium-toast ${isHiding ? "hiding" : ""}`}>
+            <CheckCircle2 size={20} color="#10b981" />
+            <span>{toastMsg}</span>
+          </div>
+        )}
+      </div>
+      
       <div className="catalog-breadcrumbs">
         <button type="button" onClick={() => navigate("/")}>
           Home
