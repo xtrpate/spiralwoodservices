@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 // 👉 FIX: Removed raw axios, imported your authenticated api
-import api from "../../services/api";
+import api, { buildAssetUrl } from "../../services/api";
 import {
   User,
   Mail,
@@ -54,17 +54,34 @@ const Alert = ({ type, msg }) =>
     </div>
   ) : null;
 
+/* ── Avatar URL builder ──
+   Backend currently stores only the bare filename, but this stays
+   defensive in case a row ever holds "/uploads/avatars/filename" or
+   a full URL instead. Reuses buildAssetUrl() so the domain always
+   matches whatever the app is actually calling. */
+const getAvatarUrl = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  if (/^(https?:|data:|blob:)/i.test(raw)) {
+    return buildAssetUrl(raw);
+  }
+
+  const cleaned = raw.replace(/\\/g, "/").replace(/^\/+/, "");
+  const withPrefix = cleaned.startsWith("uploads/avatars/")
+    ? `/${cleaned}`
+    : `/uploads/avatars/${cleaned}`;
+
+  return buildAssetUrl(withPrefix);
+};
+
 export default function ProfileSettings() {
   const { user, setUser } = useAuthStore();
   const fileRef = useRef(null);
 
   /* ─ State ─ */
-  const backendUrl = "https://wisdom-ov31.onrender.com";
-
-  const [avatarPreview, setAvatarPreview] = useState(
-    user?.profile_photo
-      ? `${backendUrl}/uploads/avatars/${user.profile_photo}`
-      : null,
+  const [avatarPreview, setAvatarPreview] = useState(() =>
+    getAvatarUrl(user?.profile_photo),
   );
   const [avatarFile, setAvatarFile] = useState(null);
   const [avatarMsg, setAvatarMsg] = useState({ type: "", text: "" });
@@ -151,10 +168,12 @@ export default function ProfileSettings() {
 
       // set it correctly with the required multi-part boundary!
       const res = await api.post("/customer/profile/avatar", fd);
+      const savedProfilePhoto = res.data.profile_photo;
 
       if (user) {
-        setUser({ ...user, profile_photo: res.data.profile_photo });
+        setUser({ ...user, profile_photo: savedProfilePhoto });
       }
+      setAvatarPreview(getAvatarUrl(savedProfilePhoto));
 
       setAvatarMsg({ type: "success", text: "Profile picture updated!" });
       setAvatarFile(null);
@@ -510,11 +529,7 @@ export default function ProfileSettings() {
                     className="btn btn-secondary"
                     onClick={() => {
                       setAvatarFile(null);
-                      setAvatarPreview(
-                        user?.profile_photo
-                          ? `${backendUrl}/uploads/avatars/${user.profile_photo}`
-                          : null,
-                      );
+                      setAvatarPreview(getAvatarUrl(user?.profile_photo));
                     }}
                   >
                     Cancel
