@@ -258,9 +258,26 @@ export default function CustomerLayout() {
     return () => clearTimeout(timer);
   }, [headerSearch, searchFocused]);
 
-  const avatarSrc = customerUser?.profile_photo && !avatarFailed
-    ? `https://spiralwoodservice.onrender.com/uploads/avatars/${customerUser.profile_photo}`
-    : "";
+  const getAvatarUrl = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+
+    if (/^(https?:|data:|blob:)/i.test(raw)) {
+      return buildAssetUrl(raw);
+    }
+
+    const cleaned = raw.replace(/\\/g, "/").replace(/^\/+/, "");
+    const withPrefix = cleaned.startsWith("uploads/avatars/")
+      ? `/${cleaned}`
+      : `/uploads/avatars/${cleaned}`;
+
+    return buildAssetUrl(withPrefix);
+  };
+
+  const avatarSrc =
+    customerUser?.profile_photo && !avatarFailed
+      ? getAvatarUrl(customerUser.profile_photo)
+      : "";
 
   const footerInfo = {
     address: "8 Sitio Laot, Prenza 1, Marilao, Bulacan",

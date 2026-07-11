@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 // 👉 FIX: Removed raw axios, imported your authenticated api
-import api from "../../services/api";
+import api, { buildAssetUrl } from "../../services/api";
 import {
   User,
   Mail,
@@ -12,6 +12,7 @@ import {
   Eye,
   EyeOff,
   ShieldCheck,
+  MapPin,
 } from "lucide-react";
 import "./profile.css";
 import useAuthStore from "../../store/authStore";
@@ -53,32 +54,54 @@ const Alert = ({ type, msg }) =>
     </div>
   ) : null;
 
+/* ── Avatar URL builder ──
+   Backend currently stores only the bare filename, but this stays
+   defensive in case a row ever holds "/uploads/avatars/filename" or
+   a full URL instead. Reuses buildAssetUrl() so the domain always
+   matches whatever the app is actually calling. */
+const getAvatarUrl = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  if (/^(https?:|data:|blob:)/i.test(raw)) {
+    return buildAssetUrl(raw);
+  }
+
+  const cleaned = raw.replace(/\\/g, "/").replace(/^\/+/, "");
+  const withPrefix = cleaned.startsWith("uploads/avatars/")
+    ? `/${cleaned}`
+    : `/uploads/avatars/${cleaned}`;
+
+  return buildAssetUrl(withPrefix);
+};
+
 export default function ProfileSettings() {
   const { user, setUser } = useAuthStore();
   const fileRef = useRef(null);
 
   /* ─ State ─ */
-  const backendUrl = "https://wisdom-ov31.onrender.com";
-
-  const [avatarPreview, setAvatarPreview] = useState(
-    user?.profile_photo
-      ? `${backendUrl}/uploads/avatars/${user.profile_photo}`
-      : null,
+  const [avatarPreview, setAvatarPreview] = useState(() =>
+    getAvatarUrl(user?.profile_photo),
   );
   const [avatarFile, setAvatarFile] = useState(null);
   const [avatarMsg, setAvatarMsg] = useState({ type: "", text: "" });
   const [avatarLoading, setAvatarLoading] = useState(false);
 
-  /* Basic info */
-  const [editBasic, setEditBasic] = useState(false);
-  const [basicForm, setBasicForm] = useState({
-    name: user?.name || "",
+  /* Basic info — Name (independent of address) */
+  const [editName, setEditName] = useState(false);
+  const [nameForm, setNameForm] = useState({ name: user?.name || "" });
+  const [nameMsg, setNameMsg] = useState({ type: "", text: "" });
+  const [nameLoading, setNameLoading] = useState(false);
+
+  /* Default Delivery Address (independent of name) */
+  const [editAddress, setEditAddress] = useState(false);
+  const [addressForm, setAddressForm] = useState({
     address: user?.address || "",
     address_lat: user?.address_lat ?? null,
     address_lng: user?.address_lng ?? null,
   });
-  const [basicMsg, setBasicMsg] = useState({ type: "", text: "" });
-  const [basicLoading, setBasicLoading] = useState(false);
+  const [addressMsg, setAddressMsg] = useState({ type: "", text: "" });
+  const [addressLoading, setAddressLoading] = useState(false);
 
   /* Email change */
   const [editEmail, setEditEmail] = useState(false);
@@ -145,10 +168,12 @@ export default function ProfileSettings() {
 
       // set it correctly with the required multi-part boundary!
       const res = await api.post("/customer/profile/avatar", fd);
+      const savedProfilePhoto = res.data.profile_photo;
 
       if (user) {
-        setUser({ ...user, profile_photo: res.data.profile_photo });
+        setUser({ ...user, profile_photo: savedProfilePhoto });
       }
+      setAvatarPreview(getAvatarUrl(savedProfilePhoto));
 
       setAvatarMsg({ type: "success", text: "Profile picture updated!" });
       setAvatarFile(null);
@@ -166,33 +191,110 @@ export default function ProfileSettings() {
     }
   };
 
-  /* ════ BASIC INFO ════ */
-  const saveBasic = async () => {
-    setBasicLoading(true);
-    setBasicMsg({ type: "", text: "" });
+  /* ════ NAME ════ */
+  const saveName = async () => {
+    const trimmedName = (nameForm.name || "").trim();
+    if (!trimmedName) {
+      setNameMsg({ type: "error", text: "Name is required." });
+      return;
+    }
+
+    setNameLoading(true);
+    setNameMsg({ type: "", text: "" });
     try {
       await api.put("/customer/profile/basic", {
-        name: basicForm.name,
-        address: basicForm.address,
-        address_lat: basicForm.address_lat,
-        address_lng: basicForm.address_lng,
+        name: trimmedName,
+        address: user?.address || "",
+        address_lat: user?.address_lat ?? null,
+        address_lng: user?.address_lng ?? null,
       });
-      setUser((prev) => ({
-        ...prev,
-        name: basicForm.name,
-        address: basicForm.address,
-        address_lat: basicForm.address_lat,
-        address_lng: basicForm.address_lng,
-      }));
-      setBasicMsg({ type: "success", text: "Profile updated successfully!" });
-      setEditBasic(false);
+      setUser((prev) => ({ ...prev, name: trimmedName }));
+      setNameMsg({ type: "success", text: "Profile updated successfully!" });
+      setEditName(false);
     } catch (err) {
-      setBasicMsg({
+      setNameMsg({
         type: "error",
         text: err.response?.data?.message || "Update failed.",
       });
     } finally {
-      setBasicLoading(false);
+      setNameLoading(false);
+    }
+  };
+
+  /* ════ DEFAULT DELIVERY ADDRESS ════ */
+  const saveDefaultAddress = async () => {
+    const trimmedAddress = (addressForm.address || "").trim();
+    const hasLat =
+      addressForm.address_lat !== null &&
+      addressForm.address_lat !== undefined &&
+      addressForm.address_lat !== "";
+    const hasLng =
+      addressForm.address_lng !== null &&
+      addressForm.address_lng !== undefined &&
+      addressForm.address_lng !== "";
+
+    if (!trimmedAddress) {
+      setAddressMsg({ type: "error", text: "Address is required." });
+      return;
+    }
+    if (hasLat !== hasLng) {
+      setAddressMsg({
+        type: "error",
+        text: "Both latitude and longitude must be set together.",
+      });
+      return;
+    }
+    if (!hasLat || !hasLng) {
+      setAddressMsg({
+        type: "error",
+        text: "Please set a map pin for your default delivery address.",
+      });
+      return;
+    }
+    const latNum = Number(addressForm.address_lat);
+    const lngNum = Number(addressForm.address_lng);
+    if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) {
+      setAddressMsg({
+        type: "error",
+        text: "Invalid map pin. Please set the pin again.",
+      });
+      return;
+    }
+    if (latNum < -90 || latNum > 90 || lngNum < -180 || lngNum > 180) {
+      setAddressMsg({
+        type: "error",
+        text: "Invalid map pin coordinates. Please set the pin again.",
+      });
+      return;
+    }
+
+    setAddressLoading(true);
+    setAddressMsg({ type: "", text: "" });
+    try {
+      await api.put("/customer/profile/basic", {
+        name: user?.name || "",
+        address: trimmedAddress,
+        address_lat: latNum,
+        address_lng: lngNum,
+      });
+      setUser((prev) => ({
+        ...prev,
+        address: trimmedAddress,
+        address_lat: latNum,
+        address_lng: lngNum,
+      }));
+      setAddressMsg({
+        type: "success",
+        text: "Default delivery address saved!",
+      });
+      setEditAddress(false);
+    } catch (err) {
+      setAddressMsg({
+        type: "error",
+        text: err.response?.data?.message || "Update failed.",
+      });
+    } finally {
+      setAddressLoading(false);
     }
   };
 
@@ -427,11 +529,7 @@ export default function ProfileSettings() {
                     className="btn btn-secondary"
                     onClick={() => {
                       setAvatarFile(null);
-                      setAvatarPreview(
-                        user?.profile_photo
-                          ? `${backendUrl}/uploads/avatars/${user.profile_photo}`
-                          : null,
-                      );
+                      setAvatarPreview(getAvatarUrl(user?.profile_photo));
                     }}
                   >
                     Cancel
@@ -441,70 +539,45 @@ export default function ProfileSettings() {
             </div>
           </div>
 
-          {/* ══ BASIC INFO ══ */}
+          {/* ══ BASIC INFO (Name) ══ */}
           <div className="profile-section">
             <div className="profile-section-header">
               <h3>
                 <User size={16} /> Basic Information
               </h3>
-              {!editBasic && (
+              {!editName && (
                 <button
                   className="edit-toggle"
-                  onClick={() => setEditBasic(true)}
+                  onClick={() => setEditName(true)}
                 >
                   <Pencil size={13} /> Edit
                 </button>
               )}
             </div>
             <div className="profile-section-body">
-              <Alert type={basicMsg.type} msg={basicMsg.text} />
-              {editBasic ? (
+              <Alert type={nameMsg.type} msg={nameMsg.text} />
+              {editName ? (
                 <div className="profile-form">
                   <div className="form-row">
                     <div className="form-field">
                       <label>Full Name</label>
                       <input
                         type="text"
-                        value={basicForm.name}
+                        value={nameForm.name}
                         onChange={(e) =>
-                          setBasicForm((p) => ({ ...p, name: e.target.value }))
+                          setNameForm({ name: e.target.value })
                         }
                         placeholder="Your full name"
                       />
                     </div>
                   </div>
-                  <div className="form-field full">
-                    <LocationPicker
-                      label="Address"
-                      addressValue={basicForm.address}
-                      onAddressChange={(text) =>
-                        setBasicForm((p) => ({ ...p, address: text }))
-                      }
-                      value={
-                        basicForm.address_lat != null &&
-                        basicForm.address_lng != null
-                          ? {
-                              lat: Number(basicForm.address_lat),
-                              lng: Number(basicForm.address_lng),
-                            }
-                          : null
-                      }
-                      onChange={(latlng) =>
-                        setBasicForm((p) => ({
-                          ...p,
-                          address_lat: latlng?.lat ?? null,
-                          address_lng: latlng?.lng ?? null,
-                        }))
-                      }
-                    />
-                  </div>
                   <div className="profile-form-actions">
                     <button
                       className="btn btn-primary"
-                      onClick={saveBasic}
-                      disabled={basicLoading}
+                      onClick={saveName}
+                      disabled={nameLoading}
                     >
-                      {basicLoading ? (
+                      {nameLoading ? (
                         "Saving…"
                       ) : (
                         <>
@@ -515,8 +588,9 @@ export default function ProfileSettings() {
                     <button
                       className="btn btn-secondary"
                       onClick={() => {
-                        setEditBasic(false);
-                        setBasicMsg({ type: "", text: "" });
+                        setEditName(false);
+                        setNameForm({ name: user?.name || "" });
+                        setNameMsg({ type: "", text: "" });
                       }}
                     >
                       Cancel
@@ -533,6 +607,97 @@ export default function ProfileSettings() {
                       )}
                     </span>
                   </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ══ DEFAULT DELIVERY ADDRESS ══ */}
+          <div className="profile-section">
+            <div className="profile-section-header">
+              <h3>
+                <MapPin size={16} /> Default Delivery Address
+              </h3>
+              {!editAddress && (
+                <button
+                  className="edit-toggle"
+                  onClick={() => setEditAddress(true)}
+                >
+                  <Pencil size={13} /> Edit
+                </button>
+              )}
+            </div>
+            <div className="profile-section-body">
+              <Alert type={addressMsg.type} msg={addressMsg.text} />
+              {editAddress ? (
+                <div className="profile-form">
+                  <p
+                    style={{
+                      fontSize: "13px",
+                      color: "#52525b",
+                      marginBottom: "16px",
+                    }}
+                  >
+                    This address and map pin will be used as your default
+                    delivery address during checkout.
+                  </p>
+                  <div className="form-field full">
+                    <LocationPicker
+                      label="Address"
+                      addressValue={addressForm.address}
+                      onAddressChange={(text) =>
+                        setAddressForm((p) => ({ ...p, address: text }))
+                      }
+                      value={
+                        addressForm.address_lat != null &&
+                        addressForm.address_lng != null
+                          ? {
+                              lat: Number(addressForm.address_lat),
+                              lng: Number(addressForm.address_lng),
+                            }
+                          : null
+                      }
+                      onChange={(latlng) =>
+                        setAddressForm((p) => ({
+                          ...p,
+                          address_lat: latlng?.lat ?? null,
+                          address_lng: latlng?.lng ?? null,
+                        }))
+                      }
+                    />
+                  </div>
+                  <div className="profile-form-actions">
+                    <button
+                      className="btn btn-primary"
+                      onClick={saveDefaultAddress}
+                      disabled={addressLoading}
+                    >
+                      {addressLoading ? (
+                        "Saving…"
+                      ) : (
+                        <>
+                          <Check size={14} /> Set as Default Delivery Address
+                        </>
+                      )}
+                    </button>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => {
+                        setEditAddress(false);
+                        setAddressForm({
+                          address: user?.address || "",
+                          address_lat: user?.address_lat ?? null,
+                          address_lng: user?.address_lng ?? null,
+                        });
+                        setAddressMsg({ type: "", text: "" });
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="field-display">
                   <div className="field-row">
                     <label>Address</label>
                     <span
