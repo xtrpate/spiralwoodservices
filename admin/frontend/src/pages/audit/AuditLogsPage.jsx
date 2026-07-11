@@ -12,10 +12,28 @@ const ACTION_LABELS = {
   update_user: "Update User",
   reset_user_password: "Reset User Password",
   delete_user: "Delete User",
+  create_raw_material: "Create Raw Material",
+  update_raw_material: "Update Raw Material",
+  delete_raw_material: "Delete Raw Material",
+  create_supplier: "Create Supplier",
+  update_supplier: "Update Supplier",
+  delete_supplier: "Delete Supplier",
+  create_stock_movement: "Create Stock Movement",
+  create_delivery: "Create Delivery",
+  update_delivery_status: "Update Delivery Status",
 };
 
 const KNOWN_ACTIONS = Object.keys(ACTION_LABELS);
-const KNOWN_TABLES = ["products", "orders", "payment_transactions", "users"];
+const KNOWN_TABLES = [
+  "products",
+  "orders",
+  "payment_transactions",
+  "users",
+  "raw_materials",
+  "suppliers",
+  "stock_movements",
+  "deliveries",
+];
 const LIMIT_OPTIONS = [10, 20, 50, 100];
 
 const DEFAULT_FILTERS = {
