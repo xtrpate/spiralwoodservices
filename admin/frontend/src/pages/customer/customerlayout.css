@@ -26,7 +26,7 @@ body {
   /* Safety net against accidental horizontal scroll on small screens.
      Individual components should still avoid overflowing content —
      this is a backstop, not a fix for any specific element. */
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
 button,
