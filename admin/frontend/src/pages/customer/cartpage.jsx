@@ -57,6 +57,7 @@ export default function CartPage() {
   const { user } = useAuthStore();
   const customerUser = user?.role === "customer" ? user : null;
   const { cart, updateQty, removeItem, clearCart } = useCart();
+  const [itemToDelete, setItemToDelete] = useState(null);
 
   const [selected, setSelected] = useState(new Set());
   const [checkoutError, setCheckoutError] = useState("");
@@ -302,15 +303,7 @@ export default function CartPage() {
                       <button
   type="button"
   className="fm-cart-remove-circle"
-  onClick={() => {
-    const itemName = item.base_blueprint_title || item.product_name || "this item";
-    
-    const confirmDelete = window.confirm(`Are you sure you want to remove "${itemName}" from your cart?`);
-  
-    if (confirmDelete) {
-      removeItem(item.key);
-    }
-  }}
+  onClick={() => setItemToDelete(item)}
   aria-label={`Remove ${item.base_blueprint_title || item.product_name}`}
 >
   <Trash2 size={14} />
@@ -435,6 +428,34 @@ export default function CartPage() {
               );
             })}
           </div>
+
+          {itemToDelete && (
+  <div className="fm-modal-overlay">
+    <div className="fm-modal-card">
+      <h3>Remove Item</h3>
+      <p>Are you sure you want to remove "{itemToDelete.base_blueprint_title || itemToDelete.product_name}" from your cart?</p>
+      <div className="fm-modal-actions">
+        <button 
+          type="button" 
+          className="fm-modal-btn secondary" 
+          onClick={() => setItemToDelete(null)}
+        >
+          No
+        </button>
+        <button 
+          type="button" 
+          className="fm-modal-btn primary" 
+          onClick={() => {
+            removeItem(itemToDelete.key);
+            setItemToDelete(null);
+          }}
+        >
+          Yes
+        </button>
+      </div>
+    </div>
+  </div>
+)}
 
           {selected.size > 0 && selected.size < cart.length && (
             <div className="fm-cart-selection-note">
