@@ -69,16 +69,16 @@ const SkeletonCard = () => (
   </div>
 );
 
-const StockBadge = ({ status }) => {
+const StockBadge = ({ status, stock }) => {
   const stockCount = Number(stock || 0);
   const map = {
     in_stock: {
       cls: "stock-pill stock-available",
-      label: "${stockCount} Stock",
+      label: `${stockCount} In Stock`,
     },
     low_stock: {
       cls: "stock-pill stock-limited",
-      label: "Only ${stockCount} Left",
+      label: `Only ${stockCount} Left`,
     },
     out_of_stock: {
       cls: "stock-pill stock-unavailable",
@@ -88,7 +88,7 @@ const StockBadge = ({ status }) => {
 
   const { cls, label } = map[status] || {
     cls: "stock-pill stock-available",
-    label: status || "Available",
+    label: `${stockCount} Available`,
   };
 
   if (status === "out_of_stock" || stockCount <= 0) {
