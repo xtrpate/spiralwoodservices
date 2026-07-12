@@ -74,7 +74,7 @@ const StockBadge = ({ status, stock }) => {
   const map = {
     in_stock: {
       cls: "stock-pill stock-available",
-      label: `${stockCount} In Stock`,
+      label: `${stockCount} Stock`,
     },
     low_stock: {
       cls: "stock-pill stock-limited",
