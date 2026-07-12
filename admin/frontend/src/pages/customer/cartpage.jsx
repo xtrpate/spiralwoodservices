@@ -192,18 +192,21 @@ export default function CartPage() {
       ? "Custom / blueprint items follow quotation-based checkout."
       : "Shipping and final totals will be confirmed during checkout.";
 
-  <div className="premium-toast-container">
-    {toastMsg && (
-      <div className={`premium-toast ${isHiding ? "hiding" : ""}`}>
-        <CheckCircle2 size={20} color="#111111" />
-        <span>{toastMsg}</span>
-      </div>
-    )}
-  </div>;
+  const toastNotification = (
+    <div className="premium-toast-container">
+      {toastMsg && (
+        <div className={`premium-toast ${isHiding ? "hiding" : ""}`}>
+          <CheckCircle2 size={20} color="#111111" />
+          <span>{toastMsg}</span>
+        </div>
+      )}
+    </div>
+  );
 
   if (cart.length === 0) {
     return (
       <div className="fm-cart-shell">
+        {toastNotification}
         <div className="fm-cart-progress">
           <div className="fm-cart-step active">
             <span className="fm-cart-step-num">1</span>
@@ -257,6 +260,7 @@ export default function CartPage() {
 
   return (
     <div className="fm-cart-shell">
+      {toastNotification}
       <div className="fm-cart-progress">
         <div className="fm-cart-step active">
           <span className="fm-cart-step-num">1</span>
