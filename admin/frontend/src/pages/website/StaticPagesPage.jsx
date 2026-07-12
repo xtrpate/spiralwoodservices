@@ -69,12 +69,11 @@ export default function StaticPagesPage() {
       return;
     setActive(slug);
     const p = pages[slug];
-    if (p)
-      setForm({
-        title: p.title,
-        content: p.content,
-        is_visible: !!p.is_visible,
-      });
+    setForm(
+      p
+        ? { title: p.title, content: p.content, is_visible: !!p.is_visible }
+        : { title: "", content: "", is_visible: true },
+    );
     setDirty(false);
     setShowPrev(false);
   };

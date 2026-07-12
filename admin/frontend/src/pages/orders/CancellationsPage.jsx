@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../../services/api";
 import toast from "react-hot-toast";
@@ -100,6 +100,8 @@ export default function CancellationsPage() {
   const [search, setSearch] = useState("");
   const [decisionFilter, setDecisionFilter] = useState("");
   const [showPolicy, setShowPolicy] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const processingLockRef = useRef(false);
 
   const load = async () => {
     setLoading(true);
@@ -167,6 +169,10 @@ export default function CancellationsPage() {
 
   const handleProcess = async ({ approved, refund_amount, policy_applied }) => {
     if (!modal?.row?.order_id) return;
+    if (processingLockRef.current) return;
+
+    processingLockRef.current = true;
+    setProcessing(true);
 
     try {
       await api.post(`/orders/${modal.row.order_id}/cancellation`, {
@@ -175,16 +181,22 @@ export default function CancellationsPage() {
         policy_applied,
       });
 
-      toast.success(
-        approved ? "Cancellation approved." : "Cancellation rejected.",
-      );
+      toast.success(approved ? "Refund approved." : "Refund rejected.");
       setModal(null);
       load();
     } catch (err) {
-      toast.error(
-        err?.response?.data?.message ||
-          "Failed to process cancellation request.",
-      );
+      // 400/409/500/network errors are already toasted once by the shared
+      // Axios interceptor. It intentionally skips 404, so handle only
+      // that case here to avoid a duplicate toast.
+      if (err?.response?.status === 404) {
+        toast.error(
+          err?.response?.data?.message ||
+            "Cancellation request was not found.",
+        );
+      }
+    } finally {
+      processingLockRef.current = false;
+      setProcessing(false);
     }
   };
 
@@ -520,13 +532,14 @@ export default function CancellationsPage() {
           row={modal.row}
           onClose={() => setModal(null)}
           onSubmit={handleProcess}
+          processing={processing}
         />
       )}
     </div>
   );
 }
 
-function ProcessModal({ row, onClose, onSubmit }) {
+function ProcessModal({ row, onClose, onSubmit, processing }) {
   const [approved, setApproved] = useState(true);
   const [policy, setPolicy] = useState("full_refund");
   const [refund, setRefund] = useState(
@@ -563,7 +576,7 @@ function ProcessModal({ row, onClose, onSubmit }) {
     onSubmit({
       approved: false,
       refund_amount: 0,
-      policy_applied: "rejected",
+      policy_applied: null,
     });
   };
 
@@ -601,7 +614,7 @@ function ProcessModal({ row, onClose, onSubmit }) {
                 checked={approved}
                 onChange={() => setApproved(true)}
               />
-              Approve cancellation
+              Approve refund
             </label>
 
             <label style={radioLabel}>
@@ -610,7 +623,7 @@ function ProcessModal({ row, onClose, onSubmit }) {
                 checked={!approved}
                 onChange={() => setApproved(false)}
               />
-              Reject request
+              Reject refund
             </label>
           </div>
         </div>
@@ -651,20 +664,25 @@ function ProcessModal({ row, onClose, onSubmit }) {
           </>
         ) : (
           <div style={rejectNote}>
-            This request will be marked as rejected. The related order will stay
-            in its current status.
+            No refund will be recorded for this request. The order remains
+            cancelled — this decision does not change the order status.
           </div>
         )}
 
         <div style={modalActions}>
-          <button onClick={onClose} style={btnGhost}>
+          <button onClick={onClose} style={btnGhost} disabled={processing}>
             Close
           </button>
           <button
             onClick={handleSubmit}
             style={approved ? btnPrimary : btnDeclineAction}
+            disabled={processing}
           >
-            {approved ? "Approve & Process" : "Reject Request"}
+            {processing
+              ? "Processing..."
+              : approved
+                ? "Approve Refund"
+                : "Reject Refund"}
           </button>
         </div>
       </div>

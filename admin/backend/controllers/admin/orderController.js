@@ -1449,19 +1449,142 @@ exports.processCancellation = async (req, res) => {
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
+
+    const orderId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      await conn.rollback();
+      return res.status(400).json({ message: "Invalid order id." });
+    }
+
     const { approved, refund_amount, policy_applied } = req.body;
-    await conn.query(
-      "UPDATE cancellations SET approved_by = ?, approved_at = NOW(), refund_amount = ?, policy_applied = ? WHERE order_id = ?",
-      [req.user.id, refund_amount, policy_applied, parseInt(req.params.id)],
+
+    if (typeof approved !== "boolean") {
+      await conn.rollback();
+      return res.status(400).json({ message: "Invalid cancellation decision." });
+    }
+
+    // Lock the cancellation row for the duration of this transaction so a
+    // concurrent duplicate request must wait, then see the already-updated
+    // decision_status and be rejected as already-processed.
+    const [[cancellation]] = await conn.query(
+      `SELECT id, order_id, decision_status
+         FROM cancellations
+        WHERE order_id = ?
+        FOR UPDATE`,
+      [orderId],
     );
+    if (!cancellation) {
+      await conn.rollback();
+      return res
+        .status(404)
+        .json({ message: "Cancellation request not found for this order." });
+    }
+    if (cancellation.decision_status !== "pending") {
+      await conn.rollback();
+      return res
+        .status(409)
+        .json({ message: "This cancellation request has already been processed." });
+    }
+
+    const [[order]] = await conn.query(
+      `SELECT id, status, refund_status FROM orders WHERE id = ? FOR UPDATE`,
+      [orderId],
+    );
+    if (!order) {
+      await conn.rollback();
+      return res.status(404).json({ message: "Order not found." });
+    }
+
+    const ALLOWED_POLICIES = [
+      "full_refund",
+      "processing_fee",
+      "non_refundable",
+      "voided",
+    ];
+    let normalizedPolicy = null;
+    let normalizedRefund = 0;
+
+    if (approved) {
+      if (!ALLOWED_POLICIES.includes(policy_applied)) {
+        await conn.rollback();
+        return res.status(400).json({ message: "Invalid cancellation policy." });
+      }
+      const numericRefund = Number(refund_amount);
+      if (!Number.isFinite(numericRefund) || numericRefund < 0) {
+        await conn.rollback();
+        return res
+          .status(400)
+          .json({ message: "Refund amount must be zero or greater." });
+      }
+      normalizedPolicy = policy_applied;
+      normalizedRefund = numericRefund;
+    }
+
+    const nextDecision = approved === true ? "approved" : "rejected";
+
+    await conn.query(
+      `UPDATE cancellations
+          SET decision_status = ?,
+              approved_by = ?,
+              approved_at = NOW(),
+              refund_amount = ?,
+              policy_applied = ?
+        WHERE id = ?`,
+      [nextDecision, req.user.id, normalizedRefund, normalizedPolicy, cancellation.id],
+    );
+
     if (approved) {
       await conn.query(
-        "UPDATE orders SET status = 'cancelled', refund_amount = ?, refund_status = 'pending', cancelled_at = NOW() WHERE id = ?",
-        [refund_amount, parseInt(req.params.id)],
+        `UPDATE orders
+            SET status = 'cancelled',
+                refund_amount = ?,
+                refund_status = 'pending',
+                cancelled_at = NOW()
+          WHERE id = ?`,
+        [normalizedRefund, orderId],
       );
     }
+    // Rejected: intentionally no change to orders — Option A keeps the
+    // customer's cancellation final; only the refund decision is denied.
+    // Stock is never touched here — it was already restored by the
+    // customer's original cancellation request.
+
+    // Re-read the actual final order state before commit — never assume
+    // what changed; compare it against the locked "before" snapshot.
+    const [[finalOrder]] = await conn.query(
+      `SELECT status, refund_status FROM orders WHERE id = ?`,
+      [orderId],
+    );
+
     await conn.commit();
-    res.json({ message: "Cancellation processed." });
+
+    const orderStatusChanged =
+      String(order.status || "") !== String(finalOrder.status || "");
+    const refundStatusChanged =
+      String(order.refund_status || "") !== String(finalOrder.refund_status || "");
+
+    req.auditRecord = {
+      id: cancellation.id,
+      old: {
+        cancellation_id: cancellation.id,
+        decision_status: "pending",
+        order_status: order.status,
+      },
+      new: {
+        cancellation_id: cancellation.id,
+        order_id: orderId,
+        decision_status: nextDecision,
+        order_status: finalOrder.status,
+        refund_status_changed: refundStatusChanged,
+        order_status_changed: orderStatusChanged,
+        stock_changed_during_processing: false,
+        first_time_decision: true,
+      },
+    };
+
+    res.json({
+      message: approved ? "Refund approved." : "Refund rejected.",
+    });
   } catch (err) {
     await conn.rollback();
     res.status(500).json({ message: err.message });

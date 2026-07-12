@@ -23,6 +23,17 @@ const ACTION_LABELS = {
   update_delivery_status: "Update Delivery Status",
   decide_warranty_claim: "Decide Warranty Claim",
   fulfill_warranty_claim: "Fulfill Warranty Claim",
+  update_website_settings: "Update Website Settings",
+  create_faq: "Create FAQ",
+  update_faq: "Update FAQ",
+  delete_faq: "Delete FAQ",
+  update_page: "Update Page",
+  create_blueprint: "Create Blueprint",
+  update_blueprint: "Update Blueprint",
+  archive_blueprint: "Archive Blueprint",
+  restore_blueprint: "Restore Blueprint",
+  permanently_delete_blueprint: "Permanently Delete Blueprint",
+  process_cancellation: "Process Cancellation",
 };
 
 const KNOWN_ACTIONS = Object.keys(ACTION_LABELS);
@@ -36,6 +47,11 @@ const KNOWN_TABLES = [
   "stock_movements",
   "deliveries",
   "warranties",
+  "website_settings",
+  "faqs",
+  "static_pages",
+  "blueprints",
+  "cancellations",
 ];
 const LIMIT_OPTIONS = [10, 20, 50, 100];
 

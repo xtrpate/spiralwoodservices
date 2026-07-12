@@ -168,6 +168,6 @@ exports.uploadSiteLogo = withSignatureCheck(
     storage: diskStorage('settings'),
     fileFilter: fileFilter(ALLOWED_IMAGES, 'Site logo'),
     limits: { fileSize: 2 * 1024 * 1024 },
-  }).single('logo'),
+  }).single('site_logo'),
   'Site logo',
 );

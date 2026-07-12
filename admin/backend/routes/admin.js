@@ -250,19 +250,32 @@ router.post(
   "/blueprints",
   adminStaff,
   upload.uploadBlueprintFile,
+  logAction("create_blueprint", "blueprints"),
   blueprints.create,
 );
 router.put(
   "/blueprints/:id",
   adminStaff,
   upload.uploadBlueprintFile,
+  logAction("update_blueprint", "blueprints"),
   blueprints.update,
 );
-router.delete("/blueprints/:id", adminStaff, blueprints.archive);
-router.patch("/blueprints/:id/restore", adminStaff, blueprints.restore);
+router.delete(
+  "/blueprints/:id",
+  adminStaff,
+  logAction("archive_blueprint", "blueprints"),
+  blueprints.archive,
+);
+router.patch(
+  "/blueprints/:id/restore",
+  adminStaff,
+  logAction("restore_blueprint", "blueprints"),
+  blueprints.restore,
+);
 router.delete(
   "/blueprints/:id/permanent",
   adminStaff,
+  logAction("permanently_delete_blueprint", "blueprints"),
   blueprints.permanentDelete,
 );
 router.get("/blueprints/:id/estimation", adminStaff, blueprints.getEstimation);
@@ -328,7 +341,12 @@ router.post(
   orders.uploadDeliveryReceipt,
 );
 
-router.post("/orders/:id/cancellation", adminOnly, orders.processCancellation);
+router.post(
+  "/orders/:id/cancellation",
+  adminOnly,
+  logAction("process_cancellation", "cancellations"),
+  orders.processCancellation,
+);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // CONTRACTS
@@ -414,17 +432,38 @@ router.put(
   "/website/settings",
   adminOnly,
   upload.uploadSiteLogo,
+  logAction("update_website_settings", "website_settings"),
   website.updateSettings,
 );
 
 router.get("/website/faqs", adminOnly, website.getFaqs);
-router.post("/website/faqs", adminOnly, website.createFaq);
-router.put("/website/faqs/:id", adminOnly, website.updateFaq);
-router.delete("/website/faqs/:id", adminOnly, website.deleteFaq);
+router.post(
+  "/website/faqs",
+  adminOnly,
+  logAction("create_faq", "faqs"),
+  website.createFaq,
+);
+router.put(
+  "/website/faqs/:id",
+  adminOnly,
+  logAction("update_faq", "faqs"),
+  website.updateFaq,
+);
+router.delete(
+  "/website/faqs/:id",
+  adminOnly,
+  logAction("delete_faq", "faqs"),
+  website.deleteFaq,
+);
 
 router.get("/website/pages", adminOnly, website.getPages);
 router.get("/website/pages/:slug", adminOnly, website.getPage);
-router.put("/website/pages/:slug", adminOnly, website.updatePage);
+router.put(
+  "/website/pages/:slug",
+  adminOnly,
+  logAction("update_page", "static_pages"),
+  website.updatePage,
+);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // BACKUP

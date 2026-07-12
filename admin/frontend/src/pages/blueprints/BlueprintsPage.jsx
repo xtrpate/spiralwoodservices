@@ -232,10 +232,18 @@ export default function BlueprintsPage() {
       setDeleteTarget(null);
       load();
     } catch (err) {
-      toast.error(
-        err?.response?.data?.message ||
-          "Failed to permanently delete blueprint.",
-      );
+      // api.js's shared interceptor already toasts status 400 (generic
+      // message block), 403, 422, 500, and network/no-response errors. It
+      // intentionally does NOT toast 401 (session cleanup/redirect only)
+      // or 404. Only fall back locally for 404, so this failure is never
+      // shown to the admin twice. Same pattern already proven in
+      // OrderDetailPage's payment review flow.
+      if (err?.response?.status === 404) {
+        toast.error(
+          err?.response?.data?.message ||
+            "Failed to permanently delete blueprint.",
+        );
+      }
     } finally {
       setDeletingId(null);
     }
