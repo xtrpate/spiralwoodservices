@@ -414,17 +414,38 @@ router.put(
   "/website/settings",
   adminOnly,
   upload.uploadSiteLogo,
+  logAction("update_website_settings", "website_settings"),
   website.updateSettings,
 );
 
 router.get("/website/faqs", adminOnly, website.getFaqs);
-router.post("/website/faqs", adminOnly, website.createFaq);
-router.put("/website/faqs/:id", adminOnly, website.updateFaq);
-router.delete("/website/faqs/:id", adminOnly, website.deleteFaq);
+router.post(
+  "/website/faqs",
+  adminOnly,
+  logAction("create_faq", "faqs"),
+  website.createFaq,
+);
+router.put(
+  "/website/faqs/:id",
+  adminOnly,
+  logAction("update_faq", "faqs"),
+  website.updateFaq,
+);
+router.delete(
+  "/website/faqs/:id",
+  adminOnly,
+  logAction("delete_faq", "faqs"),
+  website.deleteFaq,
+);
 
 router.get("/website/pages", adminOnly, website.getPages);
 router.get("/website/pages/:slug", adminOnly, website.getPage);
-router.put("/website/pages/:slug", adminOnly, website.updatePage);
+router.put(
+  "/website/pages/:slug",
+  adminOnly,
+  logAction("update_page", "static_pages"),
+  website.updatePage,
+);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // BACKUP

@@ -3,6 +3,55 @@ const pool = require("../../config/db");
 const path = require("path");
 const fs = require("fs");
 
+// Setting-key categorization for audit metadata only — does not affect
+// validation or business behavior. Values are never logged, only which
+// category of keys changed.
+const PAYMENT_SETTING_KEYS = [
+  "bank_account_name",
+  "bank_account_number",
+  "bank_transfer_enabled",
+  "gcash_enabled",
+  "gcash_number",
+  "cod_enabled",
+  "cop_enabled",
+];
+const MESSAGE_SETTING_KEYS = [
+  "email_footer",
+  "checkout_note",
+];
+const POLICY_SETTING_KEYS = [
+  "warranty_period_days",
+  "cancellation_fee_pct",
+];
+
+// Strict allow-list mapping each known non-logo setting key to its
+// database group_name. Any key not in this map is ignored entirely —
+// no row is read, written, or added to changedKeys. site_logo is
+// deliberately absent: it may only ever come from req.file, never
+// from a normal request-body field.
+const SETTING_KEY_GROUPS = {
+  site_name: "display",
+  show_faq_section: "display",
+  show_about_section: "display",
+  business_address: "display",
+  business_phone: "display",
+  cod_enabled: "payment",
+  cop_enabled: "payment",
+  gcash_enabled: "payment",
+  bank_transfer_enabled: "payment",
+  gcash_number: "payment",
+  bank_account_name: "payment",
+  bank_account_number: "payment",
+  email_footer: "email",
+  checkout_note: "email",
+  warranty_period_days: "policy",
+  cancellation_fee_pct: "policy",
+};
+
+// Only these three static pages may be created or updated. Any other
+// slug is rejected before touching the database.
+const KNOWN_PAGE_SLUGS = ["about_us", "contact", "faq"];
+
 // ── SETTINGS ─────────────────────────────────────────────────────────────────
 exports.getSettings = async (req, res) => {
   try {
@@ -25,20 +74,96 @@ exports.updateSettings = async (req, res) => {
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
+
+    const [[existingLogo]] = await conn.query(
+      "SELECT value FROM website_settings WHERE setting_key = ? LIMIT 1",
+      ["site_logo"],
+    );
+    const hasLogoBefore = Boolean(existingLogo?.value);
+
+    const [existingRows] = await conn.query(
+      "SELECT setting_key, value, group_name FROM website_settings",
+    );
+    const existingMap = new Map(
+      existingRows.map((r) => [r.setting_key, { value: r.value, group_name: r.group_name }]),
+    );
+
+    const changedKeys = [];
     for (const [key, value] of Object.entries(req.body)) {
+      const groupName = SETTING_KEY_GROUPS[key];
+      if (!groupName) continue; // unknown/arbitrary key — ignored entirely
+
+      const existing = existingMap.get(key);
+
+      // Normalize to strings before comparing — website_settings.value is
+      // TEXT, but a direct JSON request could send a number or boolean,
+      // which would otherwise falsely register as "changed" every time.
+      const nextValue =
+        value === null || value === undefined ? "" : String(value);
+      const previousValue =
+        existing?.value === null || existing?.value === undefined
+          ? ""
+          : String(existing.value);
+
+      const valueChanged = !existing || previousValue !== nextValue;
+      const groupChanged = !existing || existing.group_name !== groupName;
+      if (!valueChanged && !groupChanged) continue; // genuine no-op, skip
+
       await conn.query(
-        "UPDATE website_settings SET value = ?, updated_by = ? WHERE setting_key = ?",
-        [value, parseInt(req.user.id), key],
+        `INSERT INTO website_settings
+           (setting_key, value, group_name, updated_by)
+         VALUES
+           (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           value = VALUES(value),
+           group_name = VALUES(group_name),
+           updated_by = VALUES(updated_by)`,
+        [key, nextValue, groupName, parseInt(req.user.id)],
       );
+      changedKeys.push(key);
     }
     if (req.file) {
       const logoUrl = `/uploads/settings/${req.file.filename}`;
       await conn.query(
-        'UPDATE website_settings SET value = ?, updated_by = ? WHERE setting_key = "site_logo"',
-        [logoUrl, parseInt(req.user.id)],
+        "UPDATE website_settings SET value = ?, updated_by = ? WHERE setting_key = ?",
+        [logoUrl, parseInt(req.user.id), "site_logo"],
       );
     }
+
+    const [[updatedLogo]] = await conn.query(
+      "SELECT value FROM website_settings WHERE setting_key = ? LIMIT 1",
+      ["site_logo"],
+    );
+    const hasLogoAfter = Boolean(updatedLogo?.value);
+
     await conn.commit();
+
+    if (changedKeys.length > 0 || Boolean(req.file)) {
+      req.auditRecord = {
+        old: {
+          has_logo: hasLogoBefore,
+        },
+        new: {
+          keys_changed: changedKeys,
+          business_name_changed: changedKeys.includes("site_name"),
+          contact_info_changed: changedKeys.some((k) =>
+            ["business_address", "business_phone"].includes(k),
+          ),
+          payment_settings_changed: changedKeys.some((k) =>
+            PAYMENT_SETTING_KEYS.includes(k),
+          ),
+          message_settings_changed: changedKeys.some((k) =>
+            MESSAGE_SETTING_KEYS.includes(k),
+          ),
+          policy_settings_changed: changedKeys.some((k) =>
+            POLICY_SETTING_KEYS.includes(k),
+          ),
+          has_logo: hasLogoAfter,
+          logo_uploaded_this_update: Boolean(req.file),
+        },
+      };
+    }
+
     res.json({ message: "Settings updated." });
   } catch (err) {
     await conn.rollback();
@@ -69,6 +194,12 @@ exports.createFaq = async (req, res) => {
       "INSERT INTO faqs (question, answer, sort_order, is_visible, created_by) VALUES (?,?,?,?,?)",
       [question, answer, sort_order, is_visible ? 1 : 0, parseInt(req.user.id)],
     );
+
+    req.auditRecord = {
+      id: r.insertId,
+      new: { is_visible: Boolean(is_visible) },
+    };
+
     res.status(201).json({ message: "FAQ created.", id: r.insertId });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -78,17 +209,41 @@ exports.createFaq = async (req, res) => {
 exports.updateFaq = async (req, res) => {
   try {
     const { question, answer, sort_order, is_visible } = req.body;
+    const faqId = parseInt(req.params.id);
+
+    const [[oldFaq]] = await pool.query(
+      "SELECT question, answer, sort_order, is_visible FROM faqs WHERE id = ?",
+      [faqId],
+    );
+
     // ── FIXED: Parsed ID ──
-    await pool.query(
+    const [updateResult] = await pool.query(
       "UPDATE faqs SET question=?,answer=?,sort_order=?,is_visible=? WHERE id=?",
       [
         question,
         answer,
         sort_order,
         is_visible ? 1 : 0,
-        parseInt(req.params.id),
+        faqId,
       ],
     );
+
+    if (oldFaq && updateResult.affectedRows > 0) {
+      req.auditRecord = {
+        id: faqId,
+        old: {
+          is_visible: Boolean(oldFaq.is_visible),
+          sort_order: oldFaq.sort_order ?? null,
+        },
+        new: {
+          is_visible: Boolean(is_visible),
+          sort_order: sort_order ?? null,
+          question_changed: oldFaq.question !== question,
+          answer_changed: oldFaq.answer !== answer,
+        },
+      };
+    }
+
     res.json({ message: "FAQ updated." });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -97,10 +252,25 @@ exports.updateFaq = async (req, res) => {
 
 exports.deleteFaq = async (req, res) => {
   try {
+    const faqId = parseInt(req.params.id);
+
+    const [[oldFaq]] = await pool.query(
+      "SELECT is_visible FROM faqs WHERE id = ?",
+      [faqId],
+    );
+
     // ── FIXED: Parsed ID ──
-    await pool.query("DELETE FROM faqs WHERE id = ?", [
-      parseInt(req.params.id),
+    const [deleteResult] = await pool.query("DELETE FROM faqs WHERE id = ?", [
+      faqId,
     ]);
+
+    if (oldFaq && deleteResult.affectedRows > 0) {
+      req.auditRecord = {
+        id: faqId,
+        old: { is_visible: Boolean(oldFaq.is_visible) },
+      };
+    }
+
     res.json({ message: "FAQ deleted." });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -137,16 +307,66 @@ exports.getPage = async (req, res) => {
 exports.updatePage = async (req, res) => {
   try {
     const { title, content, is_visible } = req.body;
-    await pool.query(
-      "UPDATE static_pages SET title=?,content=?,is_visible=?,updated_by=? WHERE slug=?",
-      [
-        title,
-        content,
-        is_visible ? 1 : 0,
-        parseInt(req.user.id),
-        req.params.slug,
-      ],
+    const slug = req.params.slug;
+
+    if (!KNOWN_PAGE_SLUGS.includes(slug)) {
+      return res.status(404).json({ message: "Page not found." });
+    }
+
+    const [[oldPage]] = await pool.query(
+      "SELECT id, title, content, is_visible FROM static_pages WHERE slug = ?",
+      [slug],
     );
+
+    const isNew = !oldPage;
+    const titleChanged = isNew || oldPage.title !== title;
+    const contentChanged = isNew || oldPage.content !== content;
+
+    // Normalize is_visible explicitly — Boolean("false") is true, so a
+    // naive Boolean() coercion of a submitted string would misreport an
+    // intended "hide this page" as no change (or as a change when there
+    // isn't one).
+    const nextVisible =
+      is_visible === true ||
+      is_visible === 1 ||
+      is_visible === "1" ||
+      is_visible === "true"
+        ? 1
+        : 0;
+    const visibilityChanged =
+      isNew || Number(oldPage.is_visible) !== nextVisible;
+
+    if (!isNew && !titleChanged && !contentChanged && !visibilityChanged) {
+      // Genuine no-op resubmission — nothing changed, skip the write
+      // and the audit record entirely.
+      return res.json({ message: "Page updated." });
+    }
+
+    const [upsertResult] = await pool.query(
+      `INSERT INTO static_pages
+         (slug, title, content, is_visible, updated_by)
+       VALUES
+         (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         title = VALUES(title),
+         content = VALUES(content),
+         is_visible = VALUES(is_visible),
+         updated_by = VALUES(updated_by)`,
+      [slug, title, content, nextVisible, parseInt(req.user.id)],
+    );
+
+    req.auditRecord = {
+      id: oldPage?.id || upsertResult.insertId || null,
+      old: { is_visible: isNew ? null : Boolean(oldPage.is_visible) },
+      new: {
+        page_slug: slug,
+        title_changed: titleChanged,
+        content_changed: contentChanged,
+        is_visible: Boolean(nextVisible),
+        page_created: isNew,
+      },
+    };
+
     res.json({ message: "Page updated." });
   } catch (err) {
     res.status(500).json({ message: err.message });
