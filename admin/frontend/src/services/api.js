@@ -118,7 +118,9 @@ api.interceptors.response.use(
         return Promise.reject(error);
       }
 
-      toast.error(message || "Access denied. You do not have permission for this action.");
+      toast.error(
+        message || "Access denied. You do not have permission for this action.",
+      );
       return Promise.reject(error);
     }
 
