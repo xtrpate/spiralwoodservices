@@ -6,8 +6,6 @@ import api, { buildAssetUrl } from "../../services/api";
 import "./productcatalog.css";
 import { useCart } from "./cartcontext";
 
-
-
 const clampNumber = (value, min, max) => {
   const num = Number(value);
   if (!Number.isFinite(num)) return min;
@@ -72,16 +70,30 @@ const SkeletonCard = () => (
 );
 
 const StockBadge = ({ status }) => {
+  const stockCount = Number(stock || 0);
   const map = {
-    in_stock: { cls: "stock-pill stock-available", label: "In Stock" },
-    low_stock: { cls: "stock-pill stock-limited", label: "Low Stock" },
-    out_of_stock: { cls: "stock-pill stock-unavailable", label: "Out of Stock" },
+    in_stock: {
+      cls: "stock-pill stock-available",
+      label: "${stockCount} Stock",
+    },
+    low_stock: {
+      cls: "stock-pill stock-limited",
+      label: "Only ${stockCount} Left",
+    },
+    out_of_stock: {
+      cls: "stock-pill stock-unavailable",
+      label: "Out of Stock",
+    },
   };
 
   const { cls, label } = map[status] || {
     cls: "stock-pill stock-available",
     label: status || "Available",
   };
+
+  if (status === "out_of_stock" || stockCount <= 0) {
+    return <span className="stock-pill stock-unavailable">Out of Stock</span>;
+  }
 
   return <span className={cls}>{label}</span>;
 };
@@ -280,8 +292,6 @@ export default function ProductCatalog() {
 
     setToastMsg(`"${product.name}" successfully added to your cart!`);
     setIsHiding(false);
-
-    
   };
 
   const handleCardAddToCart = (product) => {
@@ -332,7 +342,7 @@ export default function ProductCatalog() {
     });
 
     setToastMsg('"{$name}" successfully added to your cart!');
-    setIsHiding(false);    
+    setIsHiding(false);
     setSelected(null);
   };
 
@@ -438,7 +448,6 @@ export default function ProductCatalog() {
 
   return (
     <div className="catalog-page-shell">
-
       <div className="premium-toast-container">
         {toastMsg && (
           <div className={`premium-toast ${isHiding ? "hiding" : ""}`}>
@@ -668,7 +677,9 @@ export default function ProductCatalog() {
               {searchFocused && search.trim().length > 0 && (
                 <div className="catalog-search-dropdown">
                   {loading ? (
-                    <div className="catalog-search-item-empty">Searching...</div>
+                    <div className="catalog-search-item-empty">
+                      Searching...
+                    </div>
                   ) : products.length === 0 ? (
                     <div className="catalog-search-item-empty">
                       No results found for "{search}"
@@ -794,13 +805,19 @@ export default function ProductCatalog() {
 
                     <div className="product-card-price">
                       ₱
-                      {parseFloat(product.online_price).toLocaleString("en-PH", {
-                        minimumFractionDigits: 2,
-                      })}
+                      {parseFloat(product.online_price).toLocaleString(
+                        "en-PH",
+                        {
+                          minimumFractionDigits: 2,
+                        },
+                      )}
                     </div>
 
                     <div className="product-card-stock-wrap">
-                      <StockBadge status={product.stock_status} />
+                      <StockBadge
+                        status={product.stock_status}
+                        stock={product.stock}
+                      />
                     </div>
 
                     <div className="product-card-actions">
@@ -824,8 +841,6 @@ export default function ProductCatalog() {
                       </button>
                     </div>
                   </div>
-                  
-                  
                 </div>
               ))
             )}
