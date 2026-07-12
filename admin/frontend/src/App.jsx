@@ -47,6 +47,7 @@ import ForgotPasswordPage from "./pages/customer/forgotpasswordpage";
 import ProductCatalog from "./pages/customer/productcatalog";
 import CartPage from "./pages/customer/cartpage";
 import CheckoutPage from "./pages/customer/checkoutpage";
+import OrderCompletePage from "./pages/customer/OrderCompletePage";
 import CustomizePage from "./pages/customer/customizepage";
 import CustomCheckoutPage from "./pages/customer/customcheckoutpage";
 import CustomRequestDetailPage from "./pages/customer/customrequestdetailpage";
@@ -222,6 +223,10 @@ export default function App() {
                         <CheckoutPage />
                       </RequireAuth>
                     }
+                  />
+                  <Route
+                    path="/order-complete"
+                    element={<OrderCompletePage />}
                   />
                   <Route
                     path="custom-checkout"

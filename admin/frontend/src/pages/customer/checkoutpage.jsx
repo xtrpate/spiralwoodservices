@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import api, { buildAssetUrl } from "../../services/api";
 import { useCart } from "./cartcontext";
+import { ChevronRight } from "lucide-react";
 import useAuthStore from "../../store/authStore";
 import toast from "react-hot-toast";
 import LocationPicker from "../../components/LocationPicker";
@@ -308,9 +309,8 @@ export default function CheckoutPage() {
         return;
       }
 
-      navigate("/orders", { replace: true });
+      navigate("/order-complete", { replace: true });
     } catch (err) {
-      // 👉 FIX 4: Use toast for backend API errors too
       toast.error(
         err.response?.data?.message ||
           err.response?.data?.error ||
@@ -334,6 +334,28 @@ export default function CheckoutPage() {
 
   return (
     <div className="checkout-page">
+      <div
+        className="fm-cart-shell"
+        style={{ paddingBottom: 0, paddingTop: "28px" }}
+      >
+        <div className="fm-cart-progress">
+          <div className="fm-cart-step">
+            <span className="fm-cart-step-num">1</span>
+            <span>Shopping Cart</span>
+          </div>
+          <ChevronRight size={16} className="fm-cart-progress-arrow" />
+          <div className="fm-cart-step active">
+            <span className="fm-cart-step-num">2</span>
+            <span>Checkout Details</span>
+          </div>
+          <ChevronRight size={16} className="fm-cart-progress-arrow" />
+          <div className="fm-cart-step">
+            <span className="fm-cart-step-num">3</span>
+            <span>Order Complete</span>
+          </div>
+        </div>
+      </div>
+
       <div
         className="page-hero"
         style={{
@@ -588,8 +610,8 @@ export default function CheckoutPage() {
                         margin: 0,
                       }}
                     >
-                      Cash on Pick-up — no delivery address needed. You'll
-                      pay and collect your order in-store.
+                      Cash on Pick-up — no delivery address needed. You'll pay
+                      and collect your order in-store.
                     </p>
                   </div>
                 )}
