@@ -250,19 +250,32 @@ router.post(
   "/blueprints",
   adminStaff,
   upload.uploadBlueprintFile,
+  logAction("create_blueprint", "blueprints"),
   blueprints.create,
 );
 router.put(
   "/blueprints/:id",
   adminStaff,
   upload.uploadBlueprintFile,
+  logAction("update_blueprint", "blueprints"),
   blueprints.update,
 );
-router.delete("/blueprints/:id", adminStaff, blueprints.archive);
-router.patch("/blueprints/:id/restore", adminStaff, blueprints.restore);
+router.delete(
+  "/blueprints/:id",
+  adminStaff,
+  logAction("archive_blueprint", "blueprints"),
+  blueprints.archive,
+);
+router.patch(
+  "/blueprints/:id/restore",
+  adminStaff,
+  logAction("restore_blueprint", "blueprints"),
+  blueprints.restore,
+);
 router.delete(
   "/blueprints/:id/permanent",
   adminStaff,
+  logAction("permanently_delete_blueprint", "blueprints"),
   blueprints.permanentDelete,
 );
 router.get("/blueprints/:id/estimation", adminStaff, blueprints.getEstimation);

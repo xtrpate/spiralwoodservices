@@ -11,6 +11,27 @@ function safeJsonParse(value, fallback = {}) {
     return fallback;
   }
 }
+
+// Stable comparison helpers for the JSON-text blueprint columns, used only
+// to detect whether a value meaningfully changed for audit purposes — the
+// normalized output is never logged, only the boolean comparison result.
+function sortJsonValue(value) {
+  if (Array.isArray(value)) {
+    return value.map(sortJsonValue);
+  }
+  if (value && typeof value === "object") {
+    return Object.keys(value)
+      .sort()
+      .reduce((result, key) => {
+        result[key] = sortJsonValue(value[key]);
+        return result;
+      }, {});
+  }
+  return value;
+}
+function normalizeJsonForComparison(value, fallback) {
+  return JSON.stringify(sortJsonValue(safeJsonParse(value, fallback)));
+}
 function normalizeEstimationItems(items = []) {
   return (Array.isArray(items) ? items : [])
     .map((item, index) => {
@@ -1016,6 +1037,18 @@ exports.create = async (req, res) => {
       ],
     );
 
+    req.auditRecord = {
+      id: r.insertId,
+      new: {
+        stage: finalStage,
+        source: fileMeta.source || normalizedSource,
+        is_template: Boolean(Number(is_template)),
+        is_gallery: Boolean(Number(is_gallery)),
+        file_uploaded: Boolean(req.file),
+        reference_files_uploaded: hasAnyReferenceFiles(uploadedReferenceFiles),
+      },
+    };
+
     res.status(201).json({
       message: "Blueprint created.",
       id: r.insertId,
@@ -1129,6 +1162,35 @@ exports.update = async (req, res) => {
       return res.status(400).json({ message: "No updatable fields." });
     }
 
+    // Compare bp (old row, SELECT * already fetched above) against the
+    // final normalized `filtered` values — a key being present in
+    // `filtered` only means it was submitted/derived, not that its value
+    // actually differs from what's already stored.
+    const BOOLEAN_NUMERIC_FIELDS = ["is_template", "is_gallery"];
+    const NULLABLE_ID_FIELDS = ["client_id"];
+    const JSON_FIELDS = ["design_data", "view_3d_data", "locked_fields"];
+    const normNum = (v) =>
+      v === null || v === undefined || v === "" ? null : Number(v);
+
+    const actualChangedFields = Object.keys(filtered).filter((key) => {
+      const oldVal = bp[key];
+      const newVal = filtered[key];
+      if (BOOLEAN_NUMERIC_FIELDS.includes(key)) {
+        return Boolean(Number(oldVal)) !== Boolean(Number(newVal));
+      }
+      if (NULLABLE_ID_FIELDS.includes(key)) {
+        return normNum(oldVal) !== normNum(newVal);
+      }
+      if (JSON_FIELDS.includes(key)) {
+        const fallback = key === "locked_fields" ? [] : {};
+        return (
+          normalizeJsonForComparison(oldVal, fallback) !==
+          normalizeJsonForComparison(newVal, fallback)
+        );
+      }
+      return String(oldVal ?? "") !== String(newVal ?? "");
+    });
+
     if (incomingHasDesignData) {
       const [[{ maxRev }]] = await pool.query(
         `SELECT COALESCE(MAX(revision_number), 0) AS maxRev
@@ -1162,6 +1224,27 @@ exports.update = async (req, res) => {
       [...Object.values(filtered), parseInt(req.params.id)],
     );
 
+    // A revision row is written whenever incomingHasDesignData is true,
+    // even if the normalized design content turns out equivalent — that
+    // write is real and must be captured even when actualChangedFields
+    // ends up empty. An empty fields_changed array is expected/valid
+    // whenever revision_created is true but no other column changed.
+    const revisionCreated = incomingHasDesignData;
+
+    if (actualChangedFields.length > 0 || revisionCreated) {
+      req.auditRecord = {
+        id: parseInt(req.params.id),
+        new: {
+          fields_changed: actualChangedFields,
+          stage_changed: actualChangedFields.includes("stage"),
+          design_data_changed: actualChangedFields.includes("design_data"),
+          file_uploaded: Boolean(req.file),
+          reference_files_uploaded: hasUploadedReferenceFiles,
+          revision_created: revisionCreated,
+        },
+      };
+    }
+
     res.json({
       message: "Blueprint updated.",
       blueprint: {
@@ -1179,7 +1262,7 @@ exports.update = async (req, res) => {
 exports.archive = async (req, res) => {
   try {
     const [[bp]] = await pool.query(
-      `SELECT id
+      `SELECT id, stage, is_deleted
        FROM blueprints
        WHERE id = ?
        LIMIT 1`,
@@ -1190,7 +1273,7 @@ exports.archive = async (req, res) => {
       return res.status(404).json({ message: "Blueprint not found." });
     }
 
-    await pool.query(
+    const [updateResult] = await pool.query(
       `UPDATE blueprints
        SET is_deleted = 1,
            stage = 'archived',
@@ -1198,6 +1281,14 @@ exports.archive = async (req, res) => {
        WHERE id = ?`,
       [parseInt(req.params.id)],
     );
+
+    if (updateResult.affectedRows > 0) {
+      req.auditRecord = {
+        id: parseInt(req.params.id),
+        old: { stage: bp.stage, archived: Boolean(Number(bp.is_deleted)) },
+        new: { stage: "archived", archived: true },
+      };
+    }
 
     res.json({ message: "Blueprint archived." });
   } catch (err) {
@@ -1210,7 +1301,7 @@ exports.archive = async (req, res) => {
 exports.restore = async (req, res) => {
   try {
     const [[bp]] = await pool.query(
-      `SELECT id, stage
+      `SELECT id, stage, is_deleted, archived_at
        FROM blueprints
        WHERE id = ?
        LIMIT 1`,
@@ -1220,6 +1311,11 @@ exports.restore = async (req, res) => {
     if (!bp) {
       return res.status(404).json({ message: "Blueprint not found." });
     }
+
+    const wasArchived =
+      Number(bp.is_deleted) === 1 ||
+      bp.archived_at != null ||
+      bp.stage === "archived";
 
     await pool.query(
       `UPDATE blueprints
@@ -1232,6 +1328,15 @@ exports.restore = async (req, res) => {
        WHERE id = ?`,
       [parseInt(req.params.id)],
     );
+
+    if (wasArchived) {
+      const newStage = bp.stage === "archived" ? "design" : bp.stage;
+      req.auditRecord = {
+        id: parseInt(req.params.id),
+        old: { stage: bp.stage, archived: Boolean(Number(bp.is_deleted)) },
+        new: { restored: true, archived: false, stage: newStage },
+      };
+    }
 
     res.json({ message: "Blueprint restored." });
   } catch (err) {
@@ -1248,7 +1353,7 @@ exports.permanentDelete = async (req, res) => {
     await conn.beginTransaction();
 
     const [[bp]] = await conn.query(
-      `SELECT id, is_deleted
+      `SELECT id, is_deleted, stage
        FROM blueprints
        WHERE id = ?
        LIMIT 1`,
@@ -1285,6 +1390,12 @@ exports.permanentDelete = async (req, res) => {
     await deleteBlueprintCascade(conn, [Number(req.params.id)]);
 
     await conn.commit();
+
+    req.auditRecord = {
+      id: parseInt(req.params.id),
+      old: { archived: true, stage: bp.stage },
+      new: { permanently_deleted: true },
+    };
 
     res.json({ message: "Blueprint permanently deleted." });
   } catch (err) {

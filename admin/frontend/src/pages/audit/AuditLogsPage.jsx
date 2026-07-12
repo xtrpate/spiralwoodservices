@@ -28,6 +28,11 @@ const ACTION_LABELS = {
   update_faq: "Update FAQ",
   delete_faq: "Delete FAQ",
   update_page: "Update Page",
+  create_blueprint: "Create Blueprint",
+  update_blueprint: "Update Blueprint",
+  archive_blueprint: "Archive Blueprint",
+  restore_blueprint: "Restore Blueprint",
+  permanently_delete_blueprint: "Permanently Delete Blueprint",
 };
 
 const KNOWN_ACTIONS = Object.keys(ACTION_LABELS);
@@ -44,6 +49,7 @@ const KNOWN_TABLES = [
   "website_settings",
   "faqs",
   "static_pages",
+  "blueprints",
 ];
 const LIMIT_OPTIONS = [10, 20, 50, 100];
 
