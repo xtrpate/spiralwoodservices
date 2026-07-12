@@ -341,7 +341,12 @@ router.post(
   orders.uploadDeliveryReceipt,
 );
 
-router.post("/orders/:id/cancellation", adminOnly, orders.processCancellation);
+router.post(
+  "/orders/:id/cancellation",
+  adminOnly,
+  logAction("process_cancellation", "cancellations"),
+  orders.processCancellation,
+);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // CONTRACTS
