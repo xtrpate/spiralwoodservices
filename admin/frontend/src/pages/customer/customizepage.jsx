@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import api, { buildAssetUrl } from "../../services/api";
-import { Search, X } from "lucide-react";
+import { Search, X, CheckCircle2 } from "lucide-react";
 import { useCustomCart } from "./customcartcontext";
 import { useCart } from "./cartcontext";
 import useAuthStore from "../../store/authStore";
@@ -1078,6 +1078,7 @@ export default function CustomizePage() {
   const [viewingProduct, setViewingProduct] = useState(null);
   const [customizingProduct, setCustomizingProduct] = useState(null);
   const [toastMessage, setToastMessage] = useState("");
+  const [isHiding, setIsHiding] = useState(false);
 
   const requireCustomerLogin = useCallback(
     (product = null) => {
@@ -1158,10 +1159,18 @@ export default function CustomizePage() {
   }, [fetchProducts, search]);
 
   useEffect(() => {
-    if (!toastMessage) return undefined;
+    if (!toastMessage) return;
 
-    const timer = setTimeout(() => setToastMessage(""), 2500);
-    return () => clearTimeout(timer);
+    const hideTimer = setTimeout(() => setIsHiding(true), 2700);
+    const removeTimer = setTimeout(() => {
+      setToastMessage("");
+      setIsHiding(false);
+    }, 3000);
+
+    return () => {
+      clearTimeout(hideTimer);
+      clearTimeout(removeTimer);
+    };
   }, [toastMessage]);
 
   useEffect(() => {
@@ -1309,8 +1318,8 @@ export default function CustomizePage() {
       },
     });
 
-    setCustomizingProduct(null);
-    setToastMessage(`"${product.title}" added to cart!`);
+    setToastMessage(`"${product.title}" successfully added to your cart!`);
+    setIsHiding(false);
   };
 
   const renderedCards = useMemo(() => {
@@ -1343,9 +1352,14 @@ export default function CustomizePage() {
 
   return (
     <div className="cust-page">
-      {toastMessage ? (
-        <div className="cust-floating-toast">{toastMessage}</div>
-      ) : null}
+      <div className="premium-toast-container">
+        {toastMessage && (
+          <div className={`premium-toast ${isHiding ? "hiding" : ""}`}>
+            <CheckCircle2 size={20} color="#111111" />
+            <span>{toastMessage}</span>
+          </div>
+        )}
+      </div>
 
       <div className="page-hero">
         <div>
