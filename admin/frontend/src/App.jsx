@@ -226,7 +226,7 @@ export default function App() {
                   />
                   <Route
                     path="/order-complete"
-                    element={<OrderCompletePage />}
+                    element={<orderCompletePage />}
                   />
                   <Route
                     path="custom-checkout"
