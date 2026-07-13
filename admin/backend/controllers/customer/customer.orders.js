@@ -410,17 +410,20 @@ exports.createOrder = async (req, res) => {
         );
 
         const checkoutUrl = paymongoRes.data.data.attributes.checkout_url;
+        const sessionId = paymongoRes.data.data.id;
 
-        await conn.query(`UPDATE orders SET payment_url = ? WHERE id = ?`, [
-          checkoutUrl,
-          order_id,
-        ]);
+        await conn.query(
+          `UPDATE orders 
+           SET payment_status = 'unpaid', payment_url = ?, paymongo_session_id = ? 
+           WHERE id = ?`,
+          [checkoutUrl, sessionId, order_id],
+        );
 
         return res.status(201).json({
           message: "Order placed. Redirecting to payment...",
           order_id,
           order_number,
-          payment_url: paymongoRes.data.data.attributes.checkout_url,
+          payment_url: checkoutUrl,
         });
       } catch (paymongoError) {
         console.error(
@@ -567,61 +570,99 @@ exports.confirmOrder = async (req, res) => {
 
 /* ── Verify PayMongo Redirect ── */
 exports.verifyPayment = async (req, res) => {
-  const conn = await db.getConnection();
   try {
-    await conn.beginTransaction();
-
     const { order_number } = req.body;
 
     if (!order_number) {
-      await conn.rollback();
       return res.status(400).json({ message: "Order number is required." });
     }
 
-    // 1. Find the order to get the total amount
-    const [[order]] = await conn.query(
-      `SELECT id, total, payment_status FROM orders 
+    // 1. Quick read (No transaction locking yet)
+    const [[order]] = await db.query(
+      `SELECT id, total, payment_status, paymongo_session_id 
+       FROM orders 
        WHERE order_number = ? AND customer_id = ? LIMIT 1`,
       [order_number, req.user.id],
     );
 
     if (!order) {
-      await conn.rollback();
-      return res
-        .status(404)
-        .json({ message: "Order not found or unauthorized." });
+      return res.status(404).json({ message: "Order not found." });
     }
 
-    // If already verified, just return
-    if (order.payment_status === "paid") {
-      await conn.rollback();
+    // If already verified, stop here.
+    if (order.payment_status === "partial" || order.payment_status === "paid") {
       return res.json({ success: true, message: "Payment already verified." });
     }
 
-    // 2. Mark order as paid
-    await conn.query(
-      `UPDATE orders 
-       SET payment_status = 'paid', status = 'confirmed' 
-       WHERE id = ?`,
-      [order.id],
-    );
+    // 2. Ask PayMongo over the network (Database is completely free and unlocked right now)
+    if (order.paymongo_session_id) {
+      const base64Auth = Buffer.from(process.env.PAYMONGO_SECRET_KEY).toString(
+        "base64",
+      );
 
-    // 3. Create the official payment record so Admin can see it
-    await conn.query(
-      `INSERT INTO payment_transactions
-        (order_id, amount, payment_method, proof_url, status, verified_at, notes)
-       VALUES (?, ?, 'paymongo', '', 'verified', NOW(), 'Automatically verified via PayMongo integration.')`,
-      [order.id, order.total],
-    );
+      const sessionRes = await axios.get(
+        `https://api.paymongo.com/v1/checkout_sessions/${order.paymongo_session_id}`,
+        {
+          headers: {
+            accept: "application/json",
+            authorization: `Basic ${base64Auth}`,
+          },
+        },
+      );
 
-    await conn.commit();
-    res.json({ success: true, message: "Payment verified and order updated." });
+      const payments = sessionRes.data.data.attributes.payments || [];
+      const hasSuccessfulPayment = payments.some(
+        (payment) => payment.attributes.status === "paid",
+      );
+
+      // 3. ONLY if PayMongo says "Paid" do we open a strict transaction to write the data
+      if (hasSuccessfulPayment) {
+        const conn = await db.getConnection();
+        try {
+          await conn.beginTransaction();
+
+          await conn.query(
+            `UPDATE orders 
+             SET payment_status = 'paid', status = 'confirmed' 
+             WHERE id = ?`,
+            [order.id],
+          );
+
+          await conn.query(
+            `INSERT INTO payment_transactions
+              (order_id, amount, payment_method, proof_url, status, verified_at, notes)
+             VALUES (?, ?, 'paymongo', '', 'pending', NOW(), 'System verified via PayMongo API. Awaiting Admin confirmation.')`,
+            [order.id, order.total],
+          );
+
+          await conn.commit();
+          return res.json({
+            success: true,
+            message: "Payment verified successfully!",
+          });
+        } catch (dbErr) {
+          if (!conn.connection._fatalError) await conn.rollback();
+          throw dbErr; // Pass to the outer catch block
+        } finally {
+          conn.release();
+        }
+      }
+    }
+
+    // 4. Verification Failed (Customer abandoned or payment declined)
+    return res.json({
+      success: false,
+      message: "Payment has not been completed yet. Order remains unpaid.",
+    });
   } catch (err) {
-    if (!conn.connection._fatalError) await conn.rollback();
-    console.error("[customer.orders verifyPayment]", err);
-    res.status(500).json({ message: "Server error.", error: err.message });
-  } finally {
-    conn.release();
+    console.error(
+      "[customer.orders verifyPayment]",
+      err.response?.data || err.message,
+    );
+    res.status(500).json({
+      message: "Server error during verification.",
+      error: err.message,
+    });
   }
 };
 
