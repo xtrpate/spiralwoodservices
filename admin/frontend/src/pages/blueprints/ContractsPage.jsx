@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useState, useMemo, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import api from "../../services/api";
 import toast from "react-hot-toast";
@@ -206,6 +206,7 @@ export default function ContractsPage() {
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(false);
   const [saving, setSaving] = useState(false);
+  const processingLockRef = useRef(false);
 
   const [selectedOrderInfo, setSelectedOrderInfo] = useState(null);
   const [loadingOrderInfo, setLoadingOrderInfo] = useState(false);
@@ -762,12 +763,10 @@ export default function ContractsPage() {
     selectedOrderInfo?.status || selectedOrderInfo?.raw_status,
   );
 
-  const blockedOrderStatus = [
-    "cancelled",
-    "completed",
-    "shipping",
-    "delivered",
-  ].includes(currentOrderStatus);
+  // Positive allowlist — only a "confirmed" order is eligible, matching
+  // the backend rule exactly (not a blocklist of "bad" statuses).
+  const orderStatusEligible =
+    Boolean(selectedOrderInfo) && currentOrderStatus === "confirmed";
 
   const hasExistingContract = Boolean(selectedOrderInfo?.contract);
 
@@ -784,7 +783,7 @@ export default function ContractsPage() {
     },
     {
       label: "Order status",
-      ok: Boolean(selectedOrderInfo) && !blockedOrderStatus,
+      ok: orderStatusEligible,
       value: loadingOrderInfo
         ? "Checking..."
         : selectedOrderInfo
@@ -857,7 +856,7 @@ export default function ContractsPage() {
     !orderInfoError &&
     !manualBlueprintInvalid &&
     Boolean(selectedOrderInfo) &&
-    !blockedOrderStatus &&
+    orderStatusEligible &&
     !hasExistingContract &&
     Boolean(resolvedBlueprintId) &&
     paymentReady &&
@@ -897,9 +896,9 @@ export default function ContractsPage() {
       return;
     }
 
-    if (blockedOrderStatus) {
+    if (!orderStatusEligible) {
       toast.error(
-        "Contract can only be generated for active blueprint orders.",
+        "Order must be confirmed before a contract can be generated.",
       );
       return;
     }
@@ -948,7 +947,10 @@ export default function ContractsPage() {
       return;
     }
 
+    if (processingLockRef.current) return;
+    processingLockRef.current = true;
     setSaving(true);
+
     try {
       const payload = {
         order_id: Number(form.order_id),
@@ -964,11 +966,16 @@ export default function ContractsPage() {
       resetForm();
       load();
     } catch (err) {
-      toast.error(
-        err?.response?.data?.message || "Failed to generate contract.",
-      );
+      if (err?.response?.status === 404) {
+        toast.error(
+          err?.response?.data?.message || "Order or blueprint not found.",
+        );
+      }
+      // 400 / 409 / 500 / network errors are already toasted once by the
+      // shared Axios interceptor — no local toast here to avoid duplicates.
     } finally {
       setSaving(false);
+      processingLockRef.current = false;
     }
   };
 
@@ -1258,7 +1265,7 @@ export default function ContractsPage() {
                         />
                         <EligibilityItem
                           label="Order Status"
-                          ok={!blockedOrderStatus}
+                          ok={orderStatusEligible}
                           value={titleCase(
                             selectedOrderInfo?.status ||
                               selectedOrderInfo?.raw_status,
@@ -1328,9 +1335,10 @@ export default function ContractsPage() {
                         </div>
                       )}
 
-                      {blockedOrderStatus && (
+                      {!orderStatusEligible && selectedOrderInfo && (
                         <div style={{ ...errorBox, marginTop: 16 }}>
-                          This order is no longer eligible because it is already{" "}
+                          Order must be confirmed before a contract can be
+                          generated. Current status:{" "}
                           {titleCase(currentOrderStatus)}.
                         </div>
                       )}
@@ -1415,6 +1423,7 @@ export default function ContractsPage() {
                     setModal(false);
                     resetForm();
                   }}
+                  disabled={saving}
                   style={btnGhost}
                 >
                   Cancel
