@@ -320,9 +320,10 @@ export default function SalesReportPage() {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-            gap: 14,
-            marginBottom: 24,
+            gridTemplateColumns:
+              tab === "" ? "repeat(3, 1fr)" : "repeat(4, 1fr)",
+            gap: 20,
+            marginBottom: 32,
           }}
         >
           <KpiCard
@@ -796,9 +797,9 @@ function KpiCard({ label, value, color, icon }) {
       style={{
         background: "#fff",
         borderRadius: 12,
-        padding: "20px",
+        padding: "24px 20px",
         border: "1px solid #e4e4e7",
-        borderLeft: `4px solid ${color}`,
+        borderLeft: `5px solid ${color}`,
         boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
       }}
     >
@@ -824,17 +825,35 @@ function KpiCard({ label, value, color, icon }) {
           </p>
           <p
             style={{
-              fontSize: 24,
+              fontSize: 26,
               fontWeight: 800,
               color: "#0a0a0a",
               margin: "6px 0 0",
               letterSpacing: "-0.02em",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
             }}
+            title={String(value)}
           >
             {value}
           </p>
         </div>
-        <span style={{ fontSize: 24 }}>{icon}</span>
+        <div
+          style={{
+            fontSize: 24,
+            background: "#f4f4f5",
+            width: 48,
+            height: 48,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: 12,
+            flexShrink: 0,
+          }}
+        >
+          {icon}
+        </div>
       </div>
     </div>
   );
