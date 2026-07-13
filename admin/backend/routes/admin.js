@@ -352,12 +352,7 @@ router.post(
 // CONTRACTS
 // ══════════════════════════════════════════════════════════════════════════════
 router.get("/contracts", adminOnly, mgmt.getContracts);
-router.post(
-  "/contracts",
-  adminOnly,
-  logAction("generate_contract", "contracts"),
-  mgmt.generateContract,
-);
+router.post("/contracts", adminOnly, mgmt.generateContract);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // SALES REPORTS

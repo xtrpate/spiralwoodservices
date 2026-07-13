@@ -34,7 +34,6 @@ const ACTION_LABELS = {
   restore_blueprint: "Restore Blueprint",
   permanently_delete_blueprint: "Permanently Delete Blueprint",
   process_cancellation: "Process Cancellation",
-  generate_contract: "Generate Contract",
 };
 
 const KNOWN_ACTIONS = Object.keys(ACTION_LABELS);
@@ -53,7 +52,6 @@ const KNOWN_TABLES = [
   "static_pages",
   "blueprints",
   "cancellations",
-  "contracts",
 ];
 const LIMIT_OPTIONS = [10, 20, 50, 100];
 

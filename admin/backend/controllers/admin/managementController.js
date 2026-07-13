@@ -106,304 +106,52 @@ exports.getContracts = async (req, res) => {
   }
 };
 
-const parseBodyPositiveInt = (value) => {
-  if (
-    value === undefined ||
-    value === null ||
-    Array.isArray(value) ||
-    typeof value === "object" ||
-    typeof value === "boolean"
-  ) {
-    return null;
-  }
-  return parsePositiveInt(value);
-};
-
 exports.generateContract = async (req, res) => {
-  const body =
-    req.body && typeof req.body === "object" && !Array.isArray(req.body)
-      ? req.body
-      : {};
-  const { order_id, blueprint_id, terms, warranty_terms } = body;
-
-  // ── Format validation before opening a connection/transaction ──
-  const orderId = parseBodyPositiveInt(order_id);
-  if (!orderId) {
-    return res.status(400).json({ message: "Invalid order id." });
-  }
-
-  let requestedBlueprintId = null;
-  if (
-    blueprint_id !== undefined &&
-    blueprint_id !== null &&
-    String(blueprint_id).trim() !== ""
-  ) {
-    requestedBlueprintId = parseBodyPositiveInt(blueprint_id);
-    if (!requestedBlueprintId) {
-      return res.status(400).json({ message: "Invalid blueprint id." });
-    }
-  }
-
-  const trimmedTerms = typeof terms === "string" ? terms.trim() : "";
-  if (!trimmedTerms) {
-    return res.status(400).json({ message: "Contract terms are required." });
-  }
-
-  const trimmedWarrantyTerms =
-    typeof warranty_terms === "string" ? warranty_terms.trim() : "";
-  if (!trimmedWarrantyTerms) {
-    return res.status(400).json({ message: "Warranty terms are required." });
-  }
-
-  let conn = null;
-  let transactionStarted = false;
-
   try {
-    conn = await pool.getConnection();
-    await conn.beginTransaction();
-    transactionStarted = true;
+    const { order_id, blueprint_id, terms, warranty_terms } = req.body;
 
-    // Lock the order — this row is the serialization point for concurrent
-    // contract generation attempts on the same order.
-    const [[order]] = await conn.query(
-      `SELECT id, customer_id, walkin_customer_name, order_type, status,
-              blueprint_id, total, payment_status
-         FROM orders
-        WHERE id = ?
-        FOR UPDATE`,
-      [orderId],
+    // Get customer info from the order
+    // ── FIXED: Parsed ID ──
+    const [[order]] = await pool.query(
+      `SELECT o.customer_id, COALESCE(u.name, o.walkin_customer_name) AS customer_name
+       FROM orders o LEFT JOIN users u ON u.id = o.customer_id WHERE o.id = ?`,
+      [parseInt(order_id)],
     );
-    if (!order) {
-      await conn.rollback();
-      transactionStarted = false;
-      return res.status(404).json({ message: "Order not found." });
-    }
+    if (!order) return res.status(404).json({ message: "Order not found." });
 
-    const effectiveBlueprintId = parsePositiveInt(order.blueprint_id);
-    const isBlueprintOrder =
-      String(order.order_type || "").trim().toLowerCase() === "blueprint" ||
-      Boolean(effectiveBlueprintId);
-
-    if (!isBlueprintOrder) {
-      await conn.rollback();
-      transactionStarted = false;
-      return res.status(400).json({
-        message: "Contracts can only be generated for blueprint/custom orders.",
-      });
-    }
-
-    if (!effectiveBlueprintId) {
-      await conn.rollback();
-      transactionStarted = false;
-      return res.status(400).json({
-        message: "Blueprint order must be linked to a blueprint first.",
-      });
-    }
-
-    if (requestedBlueprintId && requestedBlueprintId !== effectiveBlueprintId) {
-      await conn.rollback();
-      transactionStarted = false;
-      return res.status(400).json({
-        message: "The provided blueprint does not match this order.",
-      });
-    }
-
-    const [[blueprint]] = await conn.query(
-      `SELECT id FROM blueprints WHERE id = ?`,
-      [effectiveBlueprintId],
-    );
-    if (!blueprint) {
-      await conn.rollback();
-      transactionStarted = false;
-      return res.status(404).json({ message: "Linked blueprint not found." });
-    }
-
-    // ── Required customer invariant ──
-    // Blueprint/custom orders are only ever created through the
-    // customer-authenticated custom-order flow (customer.customorders.js,
-    // createCustomOrder — INSERT INTO orders ... VALUES (?, ?, NULL, 'online',
-    // 'blueprint', 'pending', ...) with customer_id bound to req.user.id).
-    // There is no admin/walk-in code path that inserts order_type='blueprint'
-    // with customer_id NULL, and users are soft-deleted (is_active=0), never
-    // hard-deleted, so an existing order's customer_id FK is never nulled out
-    // afterward either. This check is a defensive guard for that invariant,
-    // not expected to trigger under normal operation.
-    if (!order.customer_id) {
-      await conn.rollback();
-      transactionStarted = false;
-      return res.status(400).json({
-        message:
-          "A registered customer is required before a contract can be generated.",
-      });
-    }
-
-    const [[customerRow]] = await conn.query(
-      `SELECT name FROM users WHERE id = ?`,
-      [order.customer_id],
-    );
-    const customerName = String(customerRow?.name || "").trim();
-    if (!customerName) {
-      await conn.rollback();
-      transactionStarted = false;
-      return res.status(400).json({
-        message:
-          "A registered customer is required before a contract can be generated.",
-      });
-    }
-
-    // Existing-contract check happens BEFORE the order-status check, so a
-    // repeated/concurrent request returns an accurate "already exists"
-    // message instead of a misleading status error.
-    const [[existingContract]] = await conn.query(
-      `SELECT id
-         FROM contracts
-        WHERE order_id = ?
-        LIMIT 1`,
-      [orderId],
-    );
-    if (existingContract) {
-      await conn.rollback();
-      transactionStarted = false;
-      return res
-        .status(409)
-        .json({ message: "A contract already exists for this order." });
-    }
-
-    const orderStatus = String(order.status || "").trim().toLowerCase();
-    if (orderStatus !== "confirmed") {
-      await conn.rollback();
-      transactionStarted = false;
-      return res.status(400).json({
-        message: "Order must be confirmed before a contract can be generated.",
-      });
-    }
-
-    const [[estimation]] = await conn.query(
-      `SELECT id, status
-         FROM estimations
-        WHERE blueprint_id = ?
-        ORDER BY version DESC, id DESC
-        LIMIT 1`,
-      [effectiveBlueprintId],
-    );
-    if (!estimation) {
-      await conn.rollback();
-      transactionStarted = false;
-      return res
-        .status(400)
-        .json({ message: "No estimation found for the linked blueprint." });
-    }
-    const estimationStatus = String(estimation.status || "")
-      .trim()
-      .toLowerCase();
-    if (estimationStatus !== "approved") {
-      await conn.rollback();
-      transactionStarted = false;
-      return res.status(400).json({
-        message: "Only approved estimations can proceed to contract generation.",
-      });
-    }
-
-    const totalAmount = Number(order.total);
-    if (!Number.isFinite(totalAmount) || totalAmount <= 0) {
-      await conn.rollback();
-      transactionStarted = false;
-      return res.status(400).json({
-        message:
-          "Blueprint order total must be finalized before a contract can be generated.",
-      });
-    }
-
-    const paymentStatus = String(order.payment_status || "")
-      .trim()
-      .toLowerCase();
-    let paymentReady = paymentStatus === "paid";
-    if (!paymentReady) {
-      const [[verifiedPaymentRow]] = await conn.query(
-        `SELECT COALESCE(SUM(amount), 0) AS verified_total
-           FROM payment_transactions
-          WHERE order_id = ? AND status = 'verified'`,
-        [orderId],
-      );
-      const verifiedTotal = Number(verifiedPaymentRow?.verified_total || 0);
-      paymentReady = verifiedTotal >= totalAmount * 0.3 - 0.01;
-    }
-    if (!paymentReady) {
-      await conn.rollback();
-      transactionStarted = false;
-      return res.status(400).json({
-        message:
-          "At least 30% verified down payment or full paid status is required before generating a contract.",
-      });
-    }
-
-    const [insertResult] = await conn.query(
+    // ── FIXED: Parsed IDs ──
+    const [r] = await pool.query(
+      // contracts schema: blueprint_id, order_id, customer_id, customer_name, warranty_terms, authorized_by
+      // store contract terms in warranty_terms field + materials_used field
       `INSERT INTO contracts
          (order_id, blueprint_id, customer_id, customer_name, warranty_terms, materials_used, authorized_by, start_date)
        VALUES (?, ?, ?, ?, ?, ?, ?, CURDATE())`,
       [
-        orderId,
-        effectiveBlueprintId,
+        parseInt(order_id),
+        blueprint_id ? parseInt(blueprint_id) : null,
         order.customer_id,
-        customerName,
-        trimmedWarrantyTerms,
-        trimmedTerms,
+        order.customer_name,
+        warranty_terms,
+        terms,
         req.user.id,
       ],
     );
 
-    const [updateResult] = await conn.query(
-      `UPDATE orders SET status = 'contract_released' WHERE id = ?`,
-      [orderId],
+    // Update order status
+    // ── FIXED: Parsed ID ──
+    await pool.query(
+      `UPDATE orders
+      SET status = CASE
+        WHEN status IN ('pending', 'confirmed') THEN 'contract_released'
+        ELSE status
+      END
+      WHERE id = ?`,
+      [parseInt(order_id)],
     );
-    if (updateResult.affectedRows !== 1) {
-      throw new Error("Failed to update order status after contract creation.");
-    }
 
-    const [[finalOrder]] = await conn.query(
-      `SELECT status FROM orders WHERE id = ?`,
-      [orderId],
-    );
-    if (!finalOrder) {
-      throw new Error("Order not found after status update.");
-    }
-
-    await conn.commit();
-    transactionStarted = false;
-
-    req.auditRecord = {
-      id: insertResult.insertId,
-      old: {
-        order_status: order.status,
-      },
-      new: {
-        order_id: orderId,
-        blueprint_id: effectiveBlueprintId,
-        contract_created: true,
-        order_status: finalOrder.status,
-        order_status_changed:
-          String(order.status || "") !== String(finalOrder.status || ""),
-        authorized_by_present: Boolean(req.user && req.user.id),
-      },
-    };
-
-    return res
-      .status(201)
-      .json({ message: "Contract generated.", id: insertResult.insertId });
+    res.status(201).json({ message: "Contract generated.", id: r.insertId });
   } catch (err) {
-    if (conn && transactionStarted) {
-      try {
-        await conn.rollback();
-      } catch (rollbackError) {
-        console.error(
-          "Contract generation rollback failed:",
-          rollbackError.message,
-        );
-      }
-    }
-    return res.status(500).json({ message: err.message });
-  } finally {
-    if (conn) conn.release();
+    res.status(500).json({ message: err.message });
   }
 };
 
