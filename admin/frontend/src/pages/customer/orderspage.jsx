@@ -248,6 +248,10 @@ function OrderModal({
     String(order?.payment_status || "").toLowerCase() === "unpaid" &&
     order?.payment_url;
 
+  const canCustomerConfirm =
+    order?.status === "delivered" &&
+    String(order?.payment_status || "").toLowerCase() === "paid";
+
   const sm = STATUS_META[order?.status] || {
     badge: order?.status || "Order",
     title: order?.status || "Order",
