@@ -243,9 +243,10 @@ function OrderModal({
       .finally(() => setLoading(false));
   }, [orderId]);
 
-  const canCustomerConfirm =
-    order?.status === "delivered" &&
-    String(order?.payment_status || "").toLowerCase() === "paid";
+  const canPayNow =
+    String(order?.payment_method || "").toLowerCase() === "paymongo" &&
+    String(order?.payment_status || "").toLowerCase() === "unpaid" &&
+    order?.payment_url;
 
   const sm = STATUS_META[order?.status] || {
     badge: order?.status || "Order",
@@ -430,6 +431,22 @@ function OrderModal({
                     <div className="om-section-title">Available actions</div>
 
                     <div className="om-action-stack">
+                      {canPayNow && (
+                        <button
+                          className="order-inline-btn order-inline-btn-primary om-action-btn"
+                          onClick={() =>
+                            window.location.assign(order.payment_url)
+                          }
+                          style={{
+                            background: "#2563eb",
+                            borderColor: "#2563eb",
+                            color: "#ffffff",
+                          }}
+                        >
+                          Pay Now
+                        </button>
+                      )}
+
                       {order.status === "pending" && (
                         <button
                           className="order-inline-btn order-inline-btn-outline om-action-btn"
@@ -651,7 +668,9 @@ export default function OrdersPage() {
           <div className="orders-empty-icon-wrapper">
             <PackageSearch size={48} strokeWidth={1.5} />
           </div>
-          <h2>{filter === "all" ? "No orders found" : `No ${filter} orders`}</h2>
+          <h2>
+            {filter === "all" ? "No orders found" : `No ${filter} orders`}
+          </h2>
           <p>
             {filter === "all"
               ? "You haven't placed any orders yet. Once you do, they will appear here so you can track their status and delivery."
@@ -691,6 +710,11 @@ export default function OrdersPage() {
 
             const isCustomRequest =
               !!customRequestMap[String(order?.order_number || "").trim()];
+
+            const canPayNow =
+              String(order.payment_method || "").toLowerCase() === "paymongo" &&
+              String(order.payment_status || "").toLowerCase() === "unpaid" &&
+              order.payment_url;
 
             return (
               <div
@@ -765,6 +789,23 @@ export default function OrdersPage() {
                     </div>
 
                     <div className="order-card-actions">
+                      {canPayNow && (
+                        <button
+                          className="order-inline-btn order-inline-btn-primary"
+                          onClick={(e) => {
+                            e.stopPropagation(); // Prevents the modal from opening
+                            window.location.assign(order.payment_url);
+                          }}
+                          style={{
+                            background: "#2563eb",
+                            borderColor: "#2563eb",
+                            color: "#ffffff",
+                          }}
+                        >
+                          Pay Now
+                        </button>
+                      )}
+
                       {order.status === "pending" && (
                         <button
                           className="order-inline-btn order-inline-btn-outline"

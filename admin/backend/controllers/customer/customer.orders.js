@@ -93,9 +93,13 @@ exports.createOrder = async (req, res) => {
     // — only validate lat/lng when the customer actually provided a value.
     // If provided, both must be present together (no half-a-pin).
     const hasDeliveryLat =
-      delivery_lat !== undefined && delivery_lat !== null && delivery_lat !== "";
+      delivery_lat !== undefined &&
+      delivery_lat !== null &&
+      delivery_lat !== "";
     const hasDeliveryLng =
-      delivery_lng !== undefined && delivery_lng !== null && delivery_lng !== "";
+      delivery_lng !== undefined &&
+      delivery_lng !== null &&
+      delivery_lng !== "";
 
     let cleanDeliveryLat = null;
     let cleanDeliveryLng = null;
@@ -204,7 +208,9 @@ exports.createOrder = async (req, res) => {
       if (variationId !== null) {
         if (!Number.isInteger(variationId) || variationId <= 0) {
           await conn.rollback();
-          return res.status(400).json({ message: "Invalid product variation." });
+          return res
+            .status(400)
+            .json({ message: "Invalid product variation." });
         }
 
         const [variationRows] = await conn.query(
@@ -350,12 +356,11 @@ exports.createOrder = async (req, res) => {
 
     if (normalizedPaymentMethod === "paymongo") {
       try {
-        // 👉 NEW: Fetch the customer's email from the database
+        // Fetch the customer's email from the database
         const [[userRecord]] = await conn.query(
           `SELECT email FROM users WHERE id = ? LIMIT 1`,
           [req.user.id],
         );
-        // Fallback just in case, though they should always have an email
         const customerEmail = userRecord?.email || "";
 
         const frontendUrl =
@@ -371,7 +376,7 @@ exports.createOrder = async (req, res) => {
               billing: {
                 name: name,
                 phone: phone,
-                email: customerEmail, // 👉 FIX: This auto-fills the PayMongo email box!
+                email: customerEmail,
               },
               send_email_receipt: false,
               show_description: true,
@@ -403,6 +408,13 @@ exports.createOrder = async (req, res) => {
             },
           },
         );
+
+        const checkoutUrl = paymongoRes.data.data.attributes.checkout_url;
+
+        await conn.query(`UPDATE orders SET payment_url = ? WHERE id = ?`, [
+          checkoutUrl,
+          order_id,
+        ]);
 
         return res.status(201).json({
           message: "Order placed. Redirecting to payment...",
@@ -444,10 +456,9 @@ exports.createOrder = async (req, res) => {
 /* ── List My Orders ── */
 exports.getOrders = async (req, res) => {
   try {
-    // ── FIXED: Switched to .query ──
     const [orders] = await db.query(
       `SELECT id, order_number, status, payment_method,
-              payment_status, subtotal, total,
+              payment_status, subtotal, total, payment_url,
               delivery_address, walkin_customer_name AS recipient_name,
               notes, created_at
        FROM orders
