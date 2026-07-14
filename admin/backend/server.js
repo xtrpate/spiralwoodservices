@@ -143,6 +143,18 @@ app.get("/health", async (req, res) => {
   }
 });
 
+const cron = require("node-cron");
+const {
+  autoCancelExpiredOrders,
+} = require("./controllers/customer/customer.orders");
+
+cron.schedule("0 * * * *", () => {
+  console.log(
+    "Running scheduled task: Checking for expired PayMongo orders...",
+  );
+  autoCancelExpiredOrders();
+});
+
 app.use(errorHandler);
 
 app.listen(PORT, () => {

@@ -754,3 +754,86 @@ exports.cancelOrder = async (req, res) => {
     conn.release();
   }
 };
+
+// taking back the reserve stock on unpaid online transactions
+
+/* ── Automated Task: Cancel 24-Hour Unpaid PayMongo Orders ── */
+exports.autoCancelExpiredOrders = async () => {
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    // 1. Find all unpaid PayMongo orders older than 24 hours
+    const [expiredOrders] = await conn.query(
+      `SELECT id FROM orders 
+       WHERE payment_method = 'paymongo' 
+         AND payment_status = 'unpaid' 
+         AND status = 'pending' 
+         AND created_at <= DATE_SUB(NOW(), INTERVAL 24 HOUR)`,
+    );
+
+    if (expiredOrders.length === 0) {
+      await conn.commit();
+      return; // Nothing to cancel
+    }
+
+    // 2. Process each expired order safely
+    for (const row of expiredOrders) {
+      const orderId = row.id;
+
+      // Mark order as cancelled and leave a system note
+      await conn.query(
+        `UPDATE orders
+         SET status = 'cancelled',
+             notes = CONCAT(IFNULL(notes, ''), '\n[System]: Auto-cancelled due to 24-hour payment timeout.')
+         WHERE id = ?`,
+        [orderId],
+      );
+
+      // Fetch items for this specific order
+      const [items] = await conn.query(
+        `SELECT product_id, variation_id, quantity 
+         FROM order_items 
+         WHERE order_id = ?`,
+        [orderId],
+      );
+
+      // Restore the stock
+      for (const item of items) {
+        if (item.variation_id) {
+          await conn.query(
+            `UPDATE product_variations SET stock = stock + ? WHERE id = ?`,
+            [item.quantity, item.variation_id],
+          );
+        } else {
+          await conn.query(
+            `UPDATE products SET stock = stock + ? WHERE id = ?`,
+            [item.quantity, item.product_id],
+          );
+        }
+
+        // Re-evaluate stock_status
+        await conn.query(
+          `UPDATE products
+           SET stock_status = CASE
+             WHEN stock <= 0              THEN 'out_of_stock'
+             WHEN stock <= reorder_point  THEN 'low_stock'
+             ELSE 'in_stock'
+           END
+           WHERE id = ?`,
+          [item.product_id],
+        );
+      }
+    }
+
+    await conn.commit();
+    console.log(
+      `[Cron] Successfully auto-cancelled ${expiredOrders.length} expired PayMongo orders and restored stock.`,
+    );
+  } catch (err) {
+    if (!conn.connection._fatalError) await conn.rollback();
+    console.error("[Cron Error] Auto-cancelling expired orders:", err);
+  } finally {
+    conn.release();
+  }
+};
