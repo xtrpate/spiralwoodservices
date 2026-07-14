@@ -769,7 +769,7 @@ exports.autoCancelExpiredOrders = async () => {
        WHERE payment_method = 'paymongo' 
          AND payment_status = 'unpaid' 
          AND status = 'pending' 
-         AND created_at <= DATE_SUB(NOW(), INTERVAL 24 HOUR)`,
+         AND created_at <= DATE_SUB(NOW(), INTERVAL 1 MINUTE)`,
     );
 
     if (expiredOrders.length === 0) {
