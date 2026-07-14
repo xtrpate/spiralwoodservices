@@ -59,7 +59,6 @@ export default function OrderCompletePage() {
           </button>
         </div>
 
-        {/* Optional: Link to dashboard for tracking */}
         <div style={{ marginTop: "32px" }}>
           <button
             onClick={() => navigate("/orders")}
@@ -73,7 +72,7 @@ export default function OrderCompletePage() {
               fontWeight: 600,
             }}
           >
-            View my order history
+            View order history
           </button>
         </div>
       </div>

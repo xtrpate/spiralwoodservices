@@ -244,6 +244,7 @@ function OrderModal({
   }, [orderId]);
 
   const canPayNow =
+    String(order?.status || "").toLowerCase() === "pending" &&
     String(order?.payment_method || "").toLowerCase() === "paymongo" &&
     String(order?.payment_status || "").toLowerCase() === "unpaid" &&
     order?.payment_url;
@@ -716,6 +717,7 @@ export default function OrdersPage() {
               !!customRequestMap[String(order?.order_number || "").trim()];
 
             const canPayNow =
+              String(order?.status || "").toLowerCase() === "pending" &&
               String(order.payment_method || "").toLowerCase() === "paymongo" &&
               String(order.payment_status || "").toLowerCase() === "unpaid" &&
               order.payment_url;

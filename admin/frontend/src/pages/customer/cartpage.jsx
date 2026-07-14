@@ -253,6 +253,25 @@ export default function CartPage() {
               Custom Blueprint
             </button>
           </div>
+
+          {customerUser && (
+            <div style={{ marginTop: "32px", textAlign: "center" }}>
+              <button
+                onClick={() => navigate("/orders")}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "#6b7280",
+                  textDecoration: "underline",
+                  cursor: "pointer",
+                  fontSize: "0.9rem",
+                  fontWeight: 600,
+                }}
+              >
+                View order history
+              </button>
+            </div>
+          )}
         </div>
       </div>
     );
