@@ -337,10 +337,13 @@ exports.createTask = async (req, res) => {
 /* ── Accept Task ── */
 exports.acceptTask = async (req, res) => {
   try {
+    const taskId = parseInt(req.params.id);
+    const userId = parseInt(req.user.id);
+
     // ── FIXED: Switched to .query and parsed IDs ──
     const [tasks] = await db.query(
       `SELECT * FROM project_tasks WHERE id = ? AND assigned_to = ?`,
-      [parseInt(req.params.id), parseInt(req.user.id)],
+      [taskId, userId],
     );
 
     if (tasks.length === 0) {
@@ -348,17 +351,35 @@ exports.acceptTask = async (req, res) => {
     }
     const task = tasks[0];
 
-    // ── FIXED: Switched to .query ──
-    const [result] = await db.query(
-      `UPDATE project_tasks SET status = 'in_progress', is_read = 1, accepted_at = NOW() 
-       WHERE id = ? AND status = 'pending'`,
-      [parseInt(req.params.id)],
-    );
-
-    if (result.affectedRows === 0) {
+    if (normalize(task.status) !== "pending") {
       return res
         .status(400)
         .json({ message: "Task already accepted or blocked." });
+    }
+
+    const sequenceError = await validateProductionSequence({
+      orderId: task.order_id,
+      taskRole: task.task_role,
+      currentStatus: "pending",
+      nextStatus: "in_progress",
+    });
+
+    if (sequenceError) {
+      return res.status(400).json({ message: sequenceError });
+    }
+
+    // ── FIXED: Switched to .query ──
+    const [result] = await db.query(
+      `UPDATE project_tasks SET status = 'in_progress', is_read = 1, accepted_at = NOW() 
+       WHERE id = ? AND assigned_to = ? AND status = 'pending'`,
+      [taskId, userId],
+    );
+
+    if (result.affectedRows !== 1) {
+      return res.status(409).json({
+        message:
+          "Task status or assignment changed before this update was completed. Refresh and try again.",
+      });
     }
 
     // ── FIXED: Switched to .query ──
@@ -444,12 +465,19 @@ exports.updateTaskStatus = async (req, res) => {
     }
 
     // ── FIXED: Switched to .query ──
-    await db.query(
+    const [result] = await db.query(
       `UPDATE project_tasks
        SET status = ?, completed_at = ?, is_read = 1, updated_at = NOW()
-       WHERE id = ?`,
-      [status, completedAt, taskId],
+       WHERE id = ? AND status = ? AND assigned_to = ?`,
+      [status, completedAt, taskId, existing.status, existing.assigned_to],
     );
+
+    if (result.affectedRows !== 1) {
+      return res.status(409).json({
+        message:
+          "Task status or assignment changed before this update was completed. Refresh and try again.",
+      });
+    }
 
     if (existing.assigned_by) {
       const statusLabel = String(status).replace(/_/g, " ");
@@ -525,7 +553,7 @@ exports.updateTaskStatus = async (req, res) => {
     res.json({ message: "Task status updated successfully." });
   } catch (err) {
     console.error("[pos.tasks PUT /:id/status]", err);
-    res.status(500).json({ message: "Server error.", error: err.message });
+    res.status(500).json({ message: "Server error." });
   }
 };
 
