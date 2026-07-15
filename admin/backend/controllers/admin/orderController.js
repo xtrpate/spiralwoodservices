@@ -2109,6 +2109,59 @@ exports.assignStaff = async (req, res) => {
   }
 };
 
+// ── Helper: mirrors the production-step sequence rules already enforced in
+// controllers/staff/pos.tasks.js (validateProductionSequence), reusing the
+// task-role constants/normalizers already defined above in this file. ──
+async function validateProductionStepTransition({
+  orderId,
+  taskRole,
+  currentStatus,
+  nextStatus,
+}) {
+  const stepIndex = REQUIRED_BLUEPRINT_TASK_ROLES.indexOf(
+    normalizeTaskRole(taskRole),
+  );
+
+  if (orderId && stepIndex !== -1) {
+    const [packetRows] = await pool.query(
+      `SELECT task_role, status FROM project_tasks WHERE order_id = ?`,
+      [orderId],
+    );
+
+    const packetMap = new Map(
+      packetRows.map((row) => [normalizeTaskRole(row.task_role), row]),
+    );
+
+    for (let i = 0; i < stepIndex; i += 1) {
+      const previousRole = REQUIRED_BLUEPRINT_TASK_ROLES[i];
+      const previousStep = packetMap.get(previousRole);
+
+      if (!previousStep || normalize(previousStep.status) !== "completed") {
+        return `Complete ${getTaskRoleLabel(previousRole)} first before starting ${getTaskRoleLabel(
+          normalizeTaskRole(taskRole),
+        )}.`;
+      }
+    }
+  }
+
+  if (
+    nextStatus === "in_progress" &&
+    !["pending", "blocked"].includes(currentStatus)
+  ) {
+    return "Only a pending or blocked step can be started.";
+  }
+
+  if (nextStatus === "completed" && currentStatus !== "in_progress") {
+    return "Only an in-progress step can be marked as completed.";
+  }
+
+  if (nextStatus === "blocked" && currentStatus !== "in_progress") {
+    return "Only an in-progress step can be marked as blocked.";
+  }
+
+  return null;
+}
+
 exports.updateTaskStatus = async (req, res) => {
   try {
     const orderId = parseInt(req.params.id);
@@ -2131,18 +2184,51 @@ exports.updateTaskStatus = async (req, res) => {
         .json({ message: "Task not found for this order." });
     }
 
-    const completedAt = status === "completed" ? new Date() : null;
+    const currentStatus = normalize(task.status);
+    const nextStatus = normalize(status);
 
-    await pool.query(
+    if (currentStatus === "completed" && nextStatus !== "completed") {
+      return res.status(400).json({
+        message: "Completed tasks can no longer be changed.",
+      });
+    }
+
+    const sequenceError = await validateProductionStepTransition({
+      orderId,
+      taskRole: task.task_role,
+      currentStatus,
+      nextStatus,
+    });
+
+    if (sequenceError) {
+      return res.status(400).json({ message: sequenceError });
+    }
+
+    const completedAt =
+      nextStatus === "completed" && currentStatus !== "completed"
+        ? new Date()
+        : nextStatus !== "completed"
+          ? null
+          : task.completed_at;
+
+    const [result] = await pool.query(
       `UPDATE project_tasks
        SET status = ?, completed_at = ?, is_read = 1, updated_at = NOW()
-       WHERE id = ? AND order_id = ?`,
-      [status, completedAt, taskId, orderId],
+       WHERE id = ? AND order_id = ? AND status = ?`,
+      [status, completedAt, taskId, orderId, task.status],
     );
+
+    if (result.affectedRows !== 1) {
+      return res.status(409).json({
+        message:
+          "Task status changed before this update was completed. Refresh and try again.",
+      });
+    }
 
     res.json({ message: "Task status updated successfully." });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error("orders.updateTaskStatus:", err);
+    res.status(500).json({ message: "Failed to update task status." });
   }
 };
 

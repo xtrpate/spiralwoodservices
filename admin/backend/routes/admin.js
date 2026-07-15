@@ -303,7 +303,7 @@ router.get(
 router.patch("/orders/:id/assign-staff", adminOnly, orders.assignStaff);
 router.patch(
   "/orders/:id/tasks/:taskId/status",
-  adminStaff,
+  adminOnly,
   orders.updateTaskStatus,
 );
 
