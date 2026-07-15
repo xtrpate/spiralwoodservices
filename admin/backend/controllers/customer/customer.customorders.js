@@ -4,6 +4,9 @@ const path = require("path");
 const { authenticate, requireCustomer } = require("../../middleware/auth");
 const { signUploadPath } = require("../../utils/signedUrl");
 const { verifyBufferSignature } = require("../../utils/verifyFileSignature");
+const {
+  resolveLifecycleByOrder,
+} = require("../../services/blueprintLifecycleService");
 
 const customRequestAssetsDir = path.join(
   __dirname,
@@ -674,7 +677,7 @@ exports.getCustomOrders = async (req, res) => {
 
 /* ── Get Single Customer Custom Order / Request Detail ── */
 exports.getCustomOrderById = async (req, res) => {
-  const orderId = toPositiveInt(req.params.id, 0);
+  const orderId = parseStrictPositiveInt(req.params.id);
 
   if (!orderId) {
     return res.status(400).json({ message: "Invalid custom request ID." });
@@ -779,10 +782,59 @@ exports.getCustomOrderById = async (req, res) => {
         .reduce((sum, payment) => sum + Number(payment.amount || 0), 0),
     );
 
-    const latestEstimation = await getLatestEstimationForBlueprint(
-      conn,
-      order.blueprint_id,
-    );
+    // Resolved through the lifecycle service — never selects an
+    // estimation by blueprint_id alone, and never falls back to
+    // order.total (which may itself be corrupted) when the lifecycle is
+    // blocked. No admin notification is created merely because the
+    // customer opened this read endpoint.
+    const lifecycle = await resolveLifecycleByOrder(conn, { orderId });
+
+    let latestEstimation = null;
+    let quotationAvailable = false;
+    let quotationActionBlocked = false;
+    let quotationIntegrityWarning = false;
+    let quotationMessage = null;
+    let quotedTotal = 0;
+
+    if (lifecycle.status === "OK" && lifecycle.estimation) {
+      const normalizedEstimation = await normalizeLifecycleEstimation(
+        conn,
+        lifecycle.estimation,
+      );
+
+      // A lifecycle-valid estimation is not automatically customer-
+      // actionable. Draft (still being built by admin) and rejected
+      // (already sent back for revision) are normal, non-corruption
+      // states — they must never be exposed as the active quotation.
+      if (["sent", "approved"].includes(normalizedEstimation.status)) {
+        latestEstimation = normalizedEstimation;
+        quotedTotal = roundMoney(normalizedEstimation.grand_total || 0);
+        quotationAvailable = true;
+      } else if (normalizedEstimation.status === "draft") {
+        quotationMessage = "Your quotation is being prepared by our team.";
+      } else if (normalizedEstimation.status === "rejected") {
+        quotationMessage = "Your quotation is being revised by our team.";
+      } else {
+        // Any other/unexpected status value — same safe non-corruption
+        // default as NO_ESTIMATION, never exposed.
+        quotationMessage = "Your quotation is not available yet.";
+      }
+    } else if (
+      lifecycle.reason === "NO_ESTIMATION" ||
+      lifecycle.reason === "NO_BLUEPRINT_LINKED"
+    ) {
+      // Normal, non-corruption state — nothing has been saved yet.
+      quotationMessage = "Your quotation is not available yet.";
+    } else {
+      // STALE_ESTIMATION, MULTIPLE_ORDER_OWNERS, BLUEPRINT_NOT_FOUND, or
+      // any other integrity conflict. Never expose stale_candidate,
+      // conflicting_order_ids, or the internal reason code to the
+      // customer — a generic, calm message only.
+      quotationActionBlocked = true;
+      quotationIntegrityWarning = true;
+      quotationMessage =
+        "Your quotation is being reviewed by our team. Please contact support if you need assistance.";
+    }
 
     const discussionData = await getCustomOrderDiscussion(conn, orderId);
 
@@ -795,13 +847,10 @@ exports.getCustomOrderById = async (req, res) => {
       ),
     }));
 
-    const quotedTotal = roundMoney(
-      latestEstimation?.grand_total || order.total || 0,
-    );
-
     const downPaymentDue = roundMoney(
-      order.down_payment ||
-        (quotedTotal > 0 ? calcDownPaymentAmount(quotedTotal) : 0),
+      quotationAvailable && quotedTotal > 0
+        ? calcDownPaymentAmount(quotedTotal)
+        : 0,
     );
 
     const hasVerifiedDownPayment =
@@ -811,10 +860,115 @@ exports.getCustomOrderById = async (req, res) => {
       Math.max(quotedTotal - totalVerifiedPayments, 0),
     );
 
+    // ── Payment eligibility (UI guidance only — the write endpoints
+    // above remain authoritative and re-derive every one of these facts
+    // themselves under lock). Never derived from order.payment_status.
+    const canonicalOrderStatus = normalize(order.status);
+    const hasRealContract = Boolean(lifecycle.contract);
+    const blueprintArchivedForPayment = lifecycle.blueprint
+      ? isBlueprintArchived(lifecycle.blueprint)
+      : false;
+    const estimationApprovedForPayment = latestEstimation?.status === "approved";
+    const rawOrderTotal = Number(order.total || 0);
+    const totalsValidForPayment =
+      quotationAvailable &&
+      quotedTotal > 0 &&
+      rawOrderTotal > 0 &&
+      Math.abs(rawOrderTotal - quotedTotal) <= 0.01;
+    const hasPendingPayment = normalizedPayments.some(
+      (payment) => payment.status === "pending",
+    );
+    const isFullyPaid =
+      quotedTotal > 0 && totalVerifiedPayments + 0.0001 >= quotedTotal;
+
+    const REMAINING_BALANCE_STAGES = new Set([
+      "contract_released",
+      "production",
+      "shipping",
+      "delivered",
+    ]);
+
+    let canSubmitInitialDownPayment = false;
+    let canSubmitRemainingBalance = false;
+    let paymentStage = "unavailable";
+    let paymentActionMessage =
+      "Please contact support if you need assistance with payment.";
+
+    if (quotationActionBlocked || quotationIntegrityWarning) {
+      paymentStage = "unavailable";
+      paymentActionMessage =
+        "Your payment options are temporarily unavailable while our team reviews this order. Please contact support if you need assistance.";
+    } else if (!quotationAvailable) {
+      paymentStage = "unavailable";
+      paymentActionMessage = quotationMessage || "Payment is not available yet.";
+    } else if (canonicalOrderStatus === "cancelled") {
+      paymentStage = "unavailable";
+      paymentActionMessage =
+        "This order is closed and no further payment action is available.";
+    } else if (canonicalOrderStatus === "completed") {
+      if (isFullyPaid) {
+        paymentStage = "fully_paid";
+        paymentActionMessage = "Your full payment has been verified.";
+      } else {
+        paymentStage = "unavailable";
+        paymentActionMessage =
+          "This order is closed and no further payment action is available.";
+      }
+    } else if (hasPendingPayment) {
+      paymentStage = "pending_review";
+      paymentActionMessage = "Your payment proof is awaiting admin verification.";
+    } else if (isFullyPaid) {
+      paymentStage = "fully_paid";
+      paymentActionMessage = "Your full payment has been verified.";
+    } else if (!totalsValidForPayment || blueprintArchivedForPayment) {
+      paymentStage = "unavailable";
+      paymentActionMessage =
+        "Please contact support if you need assistance with payment.";
+    } else if (!estimationApprovedForPayment) {
+      paymentStage = "unavailable";
+      paymentActionMessage =
+        "Approve your quotation first before submitting a payment.";
+    } else if (canonicalOrderStatus === "confirmed") {
+      if (hasRealContract) {
+        paymentStage = "unavailable";
+        paymentActionMessage =
+          "Please contact support if you need assistance with payment.";
+      } else if (!hasVerifiedDownPayment) {
+        canSubmitInitialDownPayment = true;
+        paymentStage = "initial";
+        paymentActionMessage = "Submit your 30% down payment proof to proceed.";
+      } else {
+        paymentStage = "awaiting_contract";
+        paymentActionMessage =
+          "Your initial payment is verified. We're preparing your contract next.";
+      }
+    } else if (REMAINING_BALANCE_STAGES.has(canonicalOrderStatus)) {
+      if (!hasRealContract || !hasVerifiedDownPayment) {
+        paymentStage = "unavailable";
+        paymentActionMessage =
+          "Please contact support if you need assistance with payment.";
+      } else if (balanceDue > 0) {
+        canSubmitRemainingBalance = true;
+        paymentStage = "remaining_balance";
+        paymentActionMessage = "Submit your remaining balance payment proof.";
+      } else {
+        paymentStage = "fully_paid";
+        paymentActionMessage = "Your full payment has been verified.";
+      }
+    } else {
+      paymentStage = "unavailable";
+      paymentActionMessage =
+        "Please contact support if you need assistance with payment.";
+    }
+
     return res.json({
       ...order,
       items: normalizedItemsWithPhotos,
       latest_estimation: latestEstimation,
+      quotation_available: quotationAvailable,
+      quotation_action_blocked: quotationActionBlocked,
+      quotation_integrity_warning: quotationIntegrityWarning,
+      quotation_message: quotationMessage,
       payment_transactions: normalizedPayments,
       discussion: discussionData.messages,
       payment_summary: {
@@ -825,6 +979,10 @@ exports.getCustomOrderById = async (req, res) => {
         balance_due: balanceDue,
         has_verified_down_payment: hasVerifiedDownPayment,
         latest_transaction: normalizedPayments[0] || null,
+        can_submit_initial_down_payment: canSubmitInitialDownPayment,
+        can_submit_remaining_balance: canSubmitRemainingBalance,
+        payment_stage: paymentStage,
+        payment_action_message: paymentActionMessage,
       },
       total_items: normalizedItemsWithPhotos.length,
       total_units: normalizedItemsWithPhotos.reduce(
@@ -834,9 +992,7 @@ exports.getCustomOrderById = async (req, res) => {
     });
   } catch (err) {
     console.error("[customer.customorders GET ONE]", err);
-    return res
-      .status(500)
-      .json({ message: "Server error.", error: err.message });
+    return res.status(500).json({ message: "Server error." });
   } finally {
     if (conn) conn.release();
   }
@@ -896,36 +1052,71 @@ const insertNotificationSafe = async (
   }
 };
 
-const getLatestEstimationForBlueprint = async (conn, blueprintId) => {
-  if (!Number(blueprintId)) return null;
+// Safely deletes an uploaded file from disk when the request that
+// accepted it does not end up successfully committing (validation
+// failure, lifecycle conflict, rolled-back transaction, or any other
+// early exit). Never throws, never exposes the filesystem path or the
+// underlying error to the customer — logged server-side only. ENOENT
+// (already gone) is not an error worth logging.
+const cleanupUploadedFile = async (filePath) => {
+  if (!filePath) return;
+  try {
+    await fs.promises.unlink(filePath);
+  } catch (err) {
+    if (err && err.code !== "ENOENT") {
+      console.error(
+        "[customer.customorders] Failed to remove orphaned upload:",
+        err.message || err,
+      );
+    }
+  }
+};
+// non-numeric strings (unlike the pre-existing toPositiveInt above, which
+// silently truncates a value like "5.5" to 5 via parseInt). Used only by
+// the 5 functions hardened in this pass; toPositiveInt itself is left
+// untouched since other, unrelated functions in this file still use it.
+const parseStrictPositiveInt = (value) => {
+  if (value === undefined || value === null) return null;
+  const str = String(value).trim();
+  if (!/^\d+$/.test(str)) return null;
+  const num = Number(str);
+  return Number.isSafeInteger(num) && num > 0 ? num : null;
+};
 
-  const [rows] = await conn.execute(
-    `SELECT
-      e.id,
-      e.blueprint_id,
-      e.version,
-      e.status,
-      e.material_cost,
-      e.labor_cost,
-      e.tax,
-      e.discount,
-      e.grand_total,
-      e.estimation_data,
-      e.approved_by,
-      e.approved_at,
-      e.created_at,
-      e.updated_at
-   FROM estimations e
-   WHERE e.blueprint_id = ?
-   ORDER BY e.created_at DESC
-   LIMIT 1`,
-    [blueprintId],
-  );
+// payment_status is derived ONLY from verified payment_transactions rows
+// — never hard-reset to a fixed value, and never based on a stored
+// column that could itself be stale.
+const deriveBlueprintPaymentStatus = (verifiedTotal, total) => {
+  if (Number(total) > 0 && Number(verifiedTotal) + 0.0001 >= Number(total)) {
+    return "paid";
+  }
+  if (Number(verifiedTotal) > 0) return "partial";
+  return "unpaid";
+};
 
-  if (!rows.length) return null;
+const isBlueprintArchived = (blueprint) =>
+  Number(blueprint?.is_deleted) === 1 ||
+  normalize(blueprint?.stage) === "archived";
 
-  const est = rows[0];
-  const estimationData = parseJSON(est.estimation_data, {}) || {};
+// Single, safe, generic response for any lifecycle integrity conflict —
+// never exposes stale estimation ids, conflicting order ids, internal
+// reason codes, SQL messages, or stack traces to the customer.
+const sendLifecycleConflict = (res) =>
+  res.status(409).json({
+    message:
+      "Your quotation is being reviewed by our team. No changes were made.",
+  });
+
+// Replaces getLatestEstimationForBlueprint. Never queries the current
+// estimation using blueprint_id, never falls back to stale_candidate, and
+// never chooses an estimation by latest created_at/version on its own —
+// it only normalizes an estimation object the caller has ALREADY resolved
+// through resolveLifecycleByOrder (i.e. lifecycle.estimation), and loads
+// that estimation's line items strictly by its own primary key.
+const normalizeLifecycleEstimation = async (conn, estimation) => {
+  if (!estimation) return null;
+
+  const estimationData = parseJSON(estimation.estimation_data, {}) || {};
 
   const [itemRows] = await conn.execute(
     `SELECT
@@ -939,31 +1130,31 @@ const getLatestEstimationForBlueprint = async (conn, blueprintId) => {
      FROM estimation_items
      WHERE estimation_id = ?
      ORDER BY id ASC`,
-    [est.id],
+    [estimation.id],
   );
 
   return {
-    id: est.id,
-    blueprint_id: est.blueprint_id,
-    version: est.version,
-    status: normalize(est.status),
-    material_cost: Number(est.material_cost || 0),
-    labor_cost: Number(est.labor_cost || 0),
+    id: estimation.id,
+    blueprint_id: estimation.blueprint_id,
+    version: estimation.version,
+    status: normalize(estimation.status),
+    material_cost: Number(estimation.material_cost || 0),
+    labor_cost: Number(estimation.labor_cost || 0),
     overhead_cost: Number(estimationData.overhead_cost || 0),
-    tax: Number(est.tax || 0),
-    discount: Number(est.discount || 0),
+    tax: Number(estimation.tax || 0),
+    discount: Number(estimation.discount || 0),
     subtotal: Number(
       estimationData.subtotal ||
-        Number(est.material_cost || 0) +
-          Number(est.labor_cost || 0) +
+        Number(estimation.material_cost || 0) +
+          Number(estimation.labor_cost || 0) +
           Number(estimationData.overhead_cost || 0),
     ),
-    grand_total: Number(est.grand_total || 0),
+    grand_total: Number(estimation.grand_total || 0),
     notes: String(estimationData.notes || "").trim(),
-    approved_by: est.approved_by || null,
-    approved_at: est.approved_at || null,
-    created_at: est.created_at || null,
-    updated_at: est.updated_at || null,
+    approved_by: estimation.approved_by || null,
+    approved_at: estimation.approved_at || null,
+    created_at: estimation.created_at || null,
+    updated_at: estimation.updated_at || null,
     items: itemRows.map((row) => ({
       id: row.id,
       component_id: row.component_id || null,
@@ -977,86 +1168,163 @@ const getLatestEstimationForBlueprint = async (conn, blueprintId) => {
 };
 
 exports.acceptEstimation = async (req, res) => {
-  const orderId = toPositiveInt(req.params.id, 0);
+  const orderId = parseStrictPositiveInt(req.params.id);
 
   if (!orderId) {
     return res.status(400).json({ message: "Invalid custom request ID." });
   }
 
-  let conn;
+  let conn = null;
+  let transactionActive = false;
+  let connectionReusable = true;
+
   try {
     conn = await db.getConnection();
     await conn.beginTransaction();
+    transactionActive = true;
 
-    const [orders] = await conn.execute(
-      `SELECT id, order_number, customer_id, blueprint_id, status, order_type
+    // Customer ownership confirmed and locked FIRST, on a query fully
+    // scoped by customer_id — never exposes or locks another customer's
+    // order, regardless of what resolveLifecycleByOrder does internally.
+    const [ownedOrders] = await conn.execute(
+      `SELECT id
        FROM orders
        WHERE id = ?
          AND customer_id = ?
          AND order_type = 'blueprint'
-       LIMIT 1`,
+       LIMIT 1
+       FOR UPDATE`,
       [orderId, req.user.id],
     );
 
-    if (!orders.length) {
+    if (!ownedOrders.length) {
       await conn.rollback();
+      transactionActive = false;
       return res.status(404).json({ message: "Custom request not found." });
     }
 
-    const order = orders[0];
+    const lifecycle = await resolveLifecycleByOrder(conn, {
+      orderId,
+      lockOrder: true,
+      lockBlueprint: true,
+    });
 
-    if (!order.blueprint_id) {
+    if (
+      lifecycle.status !== "OK" ||
+      !lifecycle.order ||
+      !lifecycle.blueprint ||
+      !lifecycle.estimation
+    ) {
       await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    const order = lifecycle.order;
+    const blueprint = lifecycle.blueprint;
+    const estimation = lifecycle.estimation;
+
+    if (normalize(order.order_type) !== "blueprint") {
+      await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    if (isBlueprintArchived(blueprint)) {
+      await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    if (normalize(order.status) !== "confirmed") {
+      await conn.rollback();
+      transactionActive = false;
       return res.status(400).json({
-        message: "No quotation is linked to this request yet.",
+        message: `Order must be confirmed to approve a quotation (current status: "${order.status}").`,
       });
     }
 
-    const latestEstimation = await getLatestEstimationForBlueprint(
+    if (normalize(estimation.status) !== "sent") {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message: "Only a sent quotation can be approved.",
+      });
+    }
+
+    if (lifecycle.contract) {
+      await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    // The estimations table has no subtotal column — estimation.subtotal
+    // on the raw resolver row is always undefined. Reuse the same
+    // parsing logic as normalizeLifecycleEstimation (estimation_data.
+    // subtotal, falling back to material_cost + labor_cost + overhead)
+    // instead of duplicating it, so orders.subtotal is never silently
+    // written as 0 just because the raw column doesn't exist.
+    const normalizedEstimation = await normalizeLifecycleEstimation(
       conn,
-      order.blueprint_id,
+      estimation,
     );
 
-    if (!latestEstimation) {
-      await conn.rollback();
-      return res.status(404).json({
-        message: "No quotation found for this request.",
-      });
-    }
-
-    if (!["sent", "approved"].includes(latestEstimation.status)) {
-      await conn.rollback();
-      return res.status(400).json({
-        message: "Only sent quotations can be approved by the customer.",
-      });
-    }
-
-    const quotedTotal = roundMoney(latestEstimation.grand_total || 0);
-    const subtotal = roundMoney(latestEstimation.subtotal || 0);
-    const tax = roundMoney(latestEstimation.tax || 0);
-    const discount = roundMoney(latestEstimation.discount || 0);
+    const quotedTotal = roundMoney(normalizedEstimation.grand_total || 0);
+    const subtotal = roundMoney(normalizedEstimation.subtotal || 0);
+    const tax = roundMoney(normalizedEstimation.tax || 0);
+    const discount = roundMoney(normalizedEstimation.discount || 0);
     const downPaymentAmount = calcDownPaymentAmount(quotedTotal);
 
     if (!(quotedTotal > 0)) {
       await conn.rollback();
+      transactionActive = false;
       return res.status(400).json({
         message: "Quotation total is invalid. Please contact the admin.",
       });
     }
 
-    if (latestEstimation.status !== "approved") {
-      await conn.execute(
-        `UPDATE estimations
-         SET status = 'approved',
-             approved_by = ?,
-             approved_at = NOW(),
-             updated_at = NOW()
-         WHERE id = ?`,
-        [req.user.id, latestEstimation.id],
-      );
+    // Guarded estimation update — status must still read 'sent' at write
+    // time, not just at the moment it was resolved above.
+    const [estUpdateResult] = await conn.execute(
+      `UPDATE estimations
+       SET status = 'approved',
+           approved_by = ?,
+           approved_at = NOW(),
+           updated_at = NOW()
+       WHERE id = ?
+         AND status = 'sent'`,
+      [req.user.id, estimation.id],
+    );
+
+    if (estUpdateResult.affectedRows === 0) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(409).json({
+        message:
+          "This quotation was already updated. Please refresh and try again.",
+        integrity_reason: "ESTIMATION_STATE_CHANGED",
+      });
     }
 
-    await conn.execute(
+    // payment_status derived from verified payment_transactions only —
+    // never hard-reset to a fixed value.
+    const [paymentRows] = await conn.execute(
+      `SELECT status, amount FROM payment_transactions WHERE order_id = ?`,
+      [order.id],
+    );
+    const verifiedTotal = roundMoney(
+      paymentRows
+        .filter((row) => normalize(row.status) === "verified")
+        .reduce((sum, row) => sum + Number(row.amount || 0), 0),
+    );
+    const derivedPaymentStatus = deriveBlueprintPaymentStatus(
+      verifiedTotal,
+      quotedTotal,
+    );
+
+    // Guarded order update — restricted to the one canonical, locked,
+    // customer-owned order.
+    const [orderUpdateResult] = await conn.execute(
       `UPDATE orders
        SET subtotal = ?,
            tax = ?,
@@ -1064,29 +1332,46 @@ exports.acceptEstimation = async (req, res) => {
            total = ?,
            down_payment = ?,
            status = 'confirmed',
-           payment_status = 'unpaid',
+           payment_status = ?,
            updated_at = NOW()
-       WHERE id = ?`,
-      [subtotal, tax, discount, quotedTotal, downPaymentAmount, order.id],
-    );
-
-    const [bpRows] = await conn.execute(
-      `SELECT creator_id
-       FROM blueprints
        WHERE id = ?
-       LIMIT 1`,
-      [order.blueprint_id],
+         AND customer_id = ?
+         AND order_type = 'blueprint'
+         AND status = 'confirmed'`,
+      [
+        subtotal,
+        tax,
+        discount,
+        quotedTotal,
+        downPaymentAmount,
+        derivedPaymentStatus,
+        order.id,
+        req.user.id,
+      ],
     );
 
-    const blueprint = bpRows[0] || null;
+    if (orderUpdateResult.affectedRows === 0) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(409).json({
+        message: "Order status changed before this could be saved. Please refresh and try again.",
+        integrity_reason: "ORDER_STATE_CHANGED",
+      });
+    }
 
-    await insertNotificationSafe(conn, blueprint?.creator_id, {
+    const [[creatorRow]] = await conn.execute(
+      `SELECT creator_id FROM blueprints WHERE id = ? LIMIT 1`,
+      [blueprint.id],
+    );
+
+    await insertNotificationSafe(conn, creatorRow?.creator_id || null, {
       type: "estimation_customer_approved",
       title: "Quotation Approved by Customer",
       message: `Customer approved the quotation for ${order.order_number}. Required 30% down payment: ₱${downPaymentAmount.toFixed(2)}.`,
     });
 
     await conn.commit();
+    transactionActive = false;
 
     return res.json({
       message: "Quotation approved successfully.",
@@ -1094,106 +1379,172 @@ exports.acceptEstimation = async (req, res) => {
       down_payment: downPaymentAmount,
     });
   } catch (err) {
-    if (conn) {
+    if (conn && transactionActive) {
       try {
         await conn.rollback();
-      } catch {}
+        transactionActive = false;
+      } catch (rollbackErr) {
+        console.error(
+          "[customer.customorders ACCEPT ESTIMATION] rollback failed:",
+          rollbackErr.message || rollbackErr,
+        );
+        connectionReusable = false;
+      }
     }
-
     console.error("[customer.customorders ACCEPT ESTIMATION]", err);
-    return res.status(500).json({
-      message: "Failed to approve quotation.",
-      error: err.message,
-    });
+    return res.status(500).json({ message: "Failed to approve quotation." });
   } finally {
-    if (conn) conn.release();
+    if (conn) {
+      if (connectionReusable) {
+        conn.release();
+      } else {
+        conn.destroy();
+      }
+    }
   }
 };
 
 exports.requestEstimationRevision = async (req, res) => {
-  const orderId = toPositiveInt(req.params.id, 0);
+  const orderId = parseStrictPositiveInt(req.params.id);
   const note = String(req.body?.note || "").trim();
 
   if (!orderId) {
     return res.status(400).json({ message: "Invalid custom request ID." });
   }
 
-  let conn;
+  let conn = null;
+  let transactionActive = false;
+  let connectionReusable = true;
+
   try {
     conn = await db.getConnection();
     await conn.beginTransaction();
+    transactionActive = true;
 
-    const [orders] = await conn.execute(
-      `SELECT id, order_number, customer_id, blueprint_id, status, order_type
+    const [ownedOrders] = await conn.execute(
+      `SELECT id
        FROM orders
        WHERE id = ?
          AND customer_id = ?
          AND order_type = 'blueprint'
-       LIMIT 1`,
+       LIMIT 1
+       FOR UPDATE`,
       [orderId, req.user.id],
     );
 
-    if (!orders.length) {
+    if (!ownedOrders.length) {
       await conn.rollback();
+      transactionActive = false;
       return res.status(404).json({ message: "Custom request not found." });
     }
 
-    const order = orders[0];
+    const lifecycle = await resolveLifecycleByOrder(conn, {
+      orderId,
+      lockOrder: true,
+      lockBlueprint: true,
+    });
 
-    if (!order.blueprint_id) {
+    if (
+      lifecycle.status !== "OK" ||
+      !lifecycle.order ||
+      !lifecycle.blueprint ||
+      !lifecycle.estimation
+    ) {
       await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    const order = lifecycle.order;
+    const blueprint = lifecycle.blueprint;
+    const estimation = lifecycle.estimation;
+
+    if (normalize(order.order_type) !== "blueprint") {
+      await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    if (isBlueprintArchived(blueprint)) {
+      await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    if (normalize(order.status) !== "confirmed") {
+      await conn.rollback();
+      transactionActive = false;
       return res.status(400).json({
-        message: "No quotation is linked to this request yet.",
+        message: `Order must be confirmed to request a revision (current status: "${order.status}").`,
       });
     }
 
-    const latestEstimation = await getLatestEstimationForBlueprint(
-      conn,
-      order.blueprint_id,
-    );
-
-    if (!latestEstimation) {
+    if (normalize(estimation.status) !== "sent") {
       await conn.rollback();
-      return res.status(404).json({
-        message: "No quotation found for this request.",
-      });
-    }
-
-    if (!["sent", "approved"].includes(latestEstimation.status)) {
-      await conn.rollback();
+      transactionActive = false;
       return res.status(400).json({
         message: "This quotation cannot be sent back for revision.",
       });
     }
 
-    await conn.execute(
+    if (lifecycle.contract) {
+      await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    if (lifecycle.has_pending_payment_transaction) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message:
+          "A payment proof is already under review for this order. Please wait for it to be resolved before requesting a revision.",
+      });
+    }
+
+    if (Number(lifecycle.verified_payment_total || 0) > 0) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message:
+          "This order already has a verified payment, so the quotation can no longer be sent back for revision.",
+      });
+    }
+
+    const [estUpdateResult] = await conn.execute(
       `UPDATE estimations
        SET status = 'rejected',
            approved_by = NULL,
            approved_at = NULL,
            updated_at = NOW()
-       WHERE id = ?`,
-      [latestEstimation.id],
+       WHERE id = ?
+         AND status = 'sent'`,
+      [estimation.id],
     );
+
+    if (estUpdateResult.affectedRows === 0) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(409).json({
+        message:
+          "This quotation was already updated. Please refresh and try again.",
+        integrity_reason: "ESTIMATION_STATE_CHANGED",
+      });
+    }
 
     await conn.execute(
       `UPDATE blueprints
        SET stage = 'estimation'
        WHERE id = ?`,
-      [order.blueprint_id],
+      [blueprint.id],
     );
 
-    const [bpRows] = await conn.execute(
-      `SELECT creator_id
-       FROM blueprints
-       WHERE id = ?
-       LIMIT 1`,
-      [order.blueprint_id],
+    const [[creatorRow]] = await conn.execute(
+      `SELECT creator_id FROM blueprints WHERE id = ? LIMIT 1`,
+      [blueprint.id],
     );
 
-    const blueprint = bpRows[0] || null;
-
-    await insertNotificationSafe(conn, blueprint?.creator_id, {
+    await insertNotificationSafe(conn, creatorRow?.creator_id || null, {
       type: "estimation_revision_requested",
       title: "Customer Requested Quotation Revision",
       message: note
@@ -1202,105 +1553,191 @@ exports.requestEstimationRevision = async (req, res) => {
     });
 
     await conn.commit();
+    transactionActive = false;
 
     return res.json({
       message: "Revision request sent successfully.",
     });
   } catch (err) {
-    if (conn) {
+    if (conn && transactionActive) {
       try {
         await conn.rollback();
-      } catch {}
+        transactionActive = false;
+      } catch (rollbackErr) {
+        console.error(
+          "[customer.customorders REQUEST REVISION] rollback failed:",
+          rollbackErr.message || rollbackErr,
+        );
+        connectionReusable = false;
+      }
     }
     console.error("[customer.customorders REQUEST REVISION]", err);
-    return res.status(500).json({
-      message: "Failed to request quotation revision.",
-      error: err.message,
-    });
+    return res
+      .status(500)
+      .json({ message: "Failed to request quotation revision." });
   } finally {
-    if (conn) conn.release();
+    if (conn) {
+      if (connectionReusable) {
+        conn.release();
+      } else {
+        conn.destroy();
+      }
+    }
   }
 };
 
 exports.rejectEstimation = async (req, res) => {
-  const orderId = toPositiveInt(req.params.id, 0);
+  const orderId = parseStrictPositiveInt(req.params.id);
   const reason = String(req.body?.reason || "").trim();
 
   if (!orderId) {
     return res.status(400).json({ message: "Invalid custom request ID." });
   }
 
-  let conn;
+  let conn = null;
+  let transactionActive = false;
+  let connectionReusable = true;
+
   try {
     conn = await db.getConnection();
     await conn.beginTransaction();
+    transactionActive = true;
 
-    const [orders] = await conn.execute(
-      `SELECT id, order_number, customer_id, blueprint_id, status, order_type
+    const [ownedOrders] = await conn.execute(
+      `SELECT id
        FROM orders
        WHERE id = ?
          AND customer_id = ?
          AND order_type = 'blueprint'
-       LIMIT 1`,
+       LIMIT 1
+       FOR UPDATE`,
       [orderId, req.user.id],
     );
 
-    if (!orders.length) {
+    if (!ownedOrders.length) {
       await conn.rollback();
+      transactionActive = false;
       return res.status(404).json({ message: "Custom request not found." });
     }
 
-    const order = orders[0];
+    const lifecycle = await resolveLifecycleByOrder(conn, {
+      orderId,
+      lockOrder: true,
+      lockBlueprint: true,
+    });
 
-    if (!order.blueprint_id) {
+    if (
+      lifecycle.status !== "OK" ||
+      !lifecycle.order ||
+      !lifecycle.blueprint ||
+      !lifecycle.estimation
+    ) {
       await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    const order = lifecycle.order;
+    const blueprint = lifecycle.blueprint;
+    const estimation = lifecycle.estimation;
+
+    if (normalize(order.order_type) !== "blueprint") {
+      await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    if (isBlueprintArchived(blueprint)) {
+      await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    if (normalize(order.status) !== "confirmed") {
+      await conn.rollback();
+      transactionActive = false;
       return res.status(400).json({
-        message: "No quotation is linked to this request yet.",
+        message: `Order must be confirmed to reject a quotation (current status: "${order.status}").`,
       });
     }
 
-    const latestEstimation = await getLatestEstimationForBlueprint(
-      conn,
-      order.blueprint_id,
-    );
-
-    if (!latestEstimation) {
+    if (normalize(estimation.status) !== "sent") {
       await conn.rollback();
-      return res.status(404).json({
-        message: "No quotation found for this request.",
+      transactionActive = false;
+      return res.status(400).json({
+        message: "This quotation cannot be rejected in its current state.",
       });
     }
 
-    await conn.execute(
+    // Payment or contract activity already exists — direct the customer
+    // to the normal cancellation/refund process instead of letting this
+    // endpoint cancel the order directly.
+    if (
+      lifecycle.contract ||
+      lifecycle.has_pending_payment_transaction ||
+      Number(lifecycle.verified_payment_total || 0) > 0
+    ) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message:
+          "This order already has payment or contract activity. Please use the standard order cancellation/refund request instead of rejecting the quotation directly.",
+      });
+    }
+
+    const [estUpdateResult] = await conn.execute(
       `UPDATE estimations
        SET status = 'rejected',
            approved_by = NULL,
            approved_at = NULL,
            updated_at = NOW()
-       WHERE id = ?`,
-      [latestEstimation.id],
+       WHERE id = ?
+         AND status = 'sent'`,
+      [estimation.id],
     );
 
-    await conn.execute(
+    if (estUpdateResult.affectedRows === 0) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(409).json({
+        message:
+          "This quotation was already updated. Please refresh and try again.",
+        integrity_reason: "ESTIMATION_STATE_CHANGED",
+      });
+    }
+
+    const [orderUpdateResult] = await conn.execute(
       `UPDATE orders
        SET status = 'cancelled',
            cancellation_reason = ?,
            cancelled_at = NOW()
-       WHERE id = ?`,
-      [reason || "Customer rejected the quotation.", order.id],
-    );
-
-    const [bpRows] = await conn.execute(
-      `SELECT creator_id
-       FROM blueprints
        WHERE id = ?
-       LIMIT 1`,
-      [order.blueprint_id],
+         AND customer_id = ?
+         AND order_type = 'blueprint'
+         AND status = 'confirmed'`,
+      [
+        reason || "Customer rejected the quotation.",
+        order.id,
+        req.user.id,
+      ],
     );
 
-    const blueprint = bpRows[0] || null;
+    if (orderUpdateResult.affectedRows === 0) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(409).json({
+        message:
+          "Order status changed before this could be saved. Please refresh and try again.",
+        integrity_reason: "ORDER_STATE_CHANGED",
+      });
+    }
 
-    await insertNotificationSafe(conn, blueprint?.creator_id, {
+    const [[creatorRow]] = await conn.execute(
+      `SELECT creator_id FROM blueprints WHERE id = ? LIMIT 1`,
+      [blueprint.id],
+    );
+
+    await insertNotificationSafe(conn, creatorRow?.creator_id || null, {
       type: "estimation_rejected",
       title: "Customer Rejected Quotation",
       message: reason
@@ -1309,28 +1746,39 @@ exports.rejectEstimation = async (req, res) => {
     });
 
     await conn.commit();
+    transactionActive = false;
 
     return res.json({
       message: "Quotation rejected successfully.",
     });
   } catch (err) {
-    if (conn) {
+    if (conn && transactionActive) {
       try {
         await conn.rollback();
-      } catch {}
+        transactionActive = false;
+      } catch (rollbackErr) {
+        console.error(
+          "[customer.customorders REJECT ESTIMATION] rollback failed:",
+          rollbackErr.message || rollbackErr,
+        );
+        connectionReusable = false;
+      }
     }
     console.error("[customer.customorders REJECT ESTIMATION]", err);
-    return res.status(500).json({
-      message: "Failed to reject quotation.",
-      error: err.message,
-    });
+    return res.status(500).json({ message: "Failed to reject quotation." });
   } finally {
-    if (conn) conn.release();
+    if (conn) {
+      if (connectionReusable) {
+        conn.release();
+      } else {
+        conn.destroy();
+      }
+    }
   }
 };
 
 exports.submitDownPayment = async (req, res) => {
-  const orderId = toPositiveInt(req.params.id, 0);
+  const orderId = parseStrictPositiveInt(req.params.id);
   const orderPaymentMethod = toAllowedBlueprintPaymentMethod(
     req.body?.payment_method,
   );
@@ -1338,109 +1786,184 @@ exports.submitDownPayment = async (req, res) => {
   const submittedAmount = roundMoney(req.body?.amount || 0);
   const proofUrl = req.file ? `/uploads/proofs/${req.file.filename}` : null;
 
-  if (!orderId) {
-    return res.status(400).json({ message: "Invalid custom request ID." });
-  }
+  let conn = null;
+  let transactionActive = false;
+  let connectionReusable = true;
+  // Set true only once the payment transaction insert and the guarded
+  // order update have both committed successfully. Everything else —
+  // validation failures, lifecycle conflicts, rollbacks, connection
+  // failures — leaves this false, and the finally block below removes
+  // the uploaded file from disk in every one of those cases.
+  let proofCommitted = false;
 
-  if (!orderPaymentMethod || !txPaymentMethod) {
-    return res.status(400).json({
-      message: "Choose a valid payment method for the 30% down payment.",
-    });
-  }
-
-  if (!proofUrl) {
-    return res.status(400).json({
-      message: "Upload your proof of payment for the 30% down payment.",
-    });
-  }
-
-  if (!(submittedAmount > 0)) {
-    return res.status(400).json({
-      message: "Enter a valid payment amount for this submission.",
-    });
-  }
-
-  let conn;
   try {
+    // Validation checks are inside the try block (not early-returned
+    // before it) specifically so the finally block's cleanup still runs
+    // for them — disk-based Multer has already written req.file to disk
+    // by the time this function runs, even for a request that fails
+    // basic validation.
+    if (!orderId) {
+      return res.status(400).json({ message: "Invalid custom request ID." });
+    }
+
+    if (!orderPaymentMethod || !txPaymentMethod) {
+      return res.status(400).json({
+        message: "Choose a valid payment method for the 30% down payment.",
+      });
+    }
+
+    if (!proofUrl) {
+      return res.status(400).json({
+        message: "Upload your proof of payment for the 30% down payment.",
+      });
+    }
+
+    if (!(submittedAmount > 0)) {
+      return res.status(400).json({
+        message: "Enter a valid payment amount for this submission.",
+      });
+    }
+
     conn = await db.getConnection();
     await conn.beginTransaction();
+    transactionActive = true;
 
-    const [orders] = await conn.execute(
-      `SELECT
-          id,
-          order_number,
-          customer_id,
-          blueprint_id,
-          order_type,
-          status,
-          total,
-          down_payment,
-          payment_status
+    // This endpoint is only for the INITIAL 30% down payment, on a
+    // customer-owned blueprint order. The separate later remaining-
+    // balance payment flow is not merged into this function.
+    const [ownedOrders] = await conn.execute(
+      `SELECT id
        FROM orders
        WHERE id = ?
          AND customer_id = ?
          AND order_type = 'blueprint'
-       LIMIT 1`,
+       LIMIT 1
+       FOR UPDATE`,
       [orderId, req.user.id],
     );
 
-    if (!orders.length) {
+    if (!ownedOrders.length) {
       await conn.rollback();
+      transactionActive = false;
       return res.status(404).json({ message: "Custom request not found." });
     }
 
-    const order = orders[0];
-    const normalizedStatus = normalize(order.status);
+    const lifecycle = await resolveLifecycleByOrder(conn, {
+      orderId,
+      lockOrder: true,
+      lockBlueprint: true,
+    });
 
-    if (!["confirmed", "contract_released"].includes(normalizedStatus)) {
+    if (
+      lifecycle.status !== "OK" ||
+      !lifecycle.order ||
+      !lifecycle.blueprint ||
+      !lifecycle.estimation
+    ) {
       await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    const order = lifecycle.order;
+    const blueprint = lifecycle.blueprint;
+    const estimation = lifecycle.estimation;
+
+    if (normalize(order.order_type) !== "blueprint") {
+      await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    if (isBlueprintArchived(blueprint)) {
+      await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    // Only "confirmed" — contract_released is intentionally not accepted
+    // here; that stage belongs to the separate remaining-balance flow,
+    // which this function does not implement.
+    if (normalize(order.status) !== "confirmed") {
+      await conn.rollback();
+      transactionActive = false;
       return res.status(400).json({
         message:
           "You can submit the 30% down payment only after approving the quotation.",
       });
     }
 
-    const latestEstimation = await getLatestEstimationForBlueprint(
-      conn,
-      order.blueprint_id,
-    );
-
-    const quotedTotal = roundMoney(
-      latestEstimation?.grand_total || order.total || 0,
-    );
-
-    const requiredDownPayment = roundMoney(
-      order.down_payment ||
-        (quotedTotal > 0 ? calcDownPaymentAmount(quotedTotal) : 0),
-    );
-
-    const [paymentRows] = await conn.execute(
-      `SELECT id, amount, status
-      FROM payment_transactions
-      WHERE order_id = ?
-      ORDER BY id DESC`,
-      [order.id],
-    );
-
-    const totalVerifiedPayments = roundMoney(
-      paymentRows
-        .filter((row) => normalize(row.status) === "verified")
-        .reduce((sum, row) => sum + Number(row.amount || 0), 0),
-    );
-
-    if (totalVerifiedPayments + 0.0001 >= requiredDownPayment) {
+    if (normalize(estimation.status) !== "approved") {
       await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message: "The quotation must be approved before submitting a down payment.",
+      });
+    }
+
+    if (lifecycle.contract) {
+      await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    const estimationGrandTotal = Number(estimation.grand_total || 0);
+
+    if (!(estimationGrandTotal > 0)) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message: "Quotation total is invalid. Please contact the admin.",
+      });
+    }
+
+    const orderTotal = Number(order.total || 0);
+
+    if (!(orderTotal > 0)) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message: "Order total is not finalized yet. Please contact the admin.",
+      });
+    }
+
+    if (Math.abs(orderTotal - estimationGrandTotal) > 0.01) {
+      await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    // Required down payment is always server-calculated fresh from the
+    // lifecycle-valid estimation's grand_total — never trusted from the
+    // stored orders.down_payment column.
+    const requiredDownPayment = calcDownPaymentAmount(estimationGrandTotal);
+
+    if (lifecycle.has_pending_payment_transaction) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message:
+          "A payment proof is already awaiting review for this order. Please wait for it to be verified or rejected before submitting another.",
+      });
+    }
+
+    const verifiedTotal = Number(lifecycle.verified_payment_total || 0);
+
+    if (verifiedTotal + 0.0001 >= requiredDownPayment) {
+      await conn.rollback();
+      transactionActive = false;
       return res.status(400).json({
         message: "Your 30% down payment is already verified.",
       });
     }
 
     const remainingVerifiedBalance = roundMoney(
-      Math.max(requiredDownPayment - totalVerifiedPayments, 0),
+      Math.max(requiredDownPayment - verifiedTotal, 0),
     );
 
     if (submittedAmount - remainingVerifiedBalance > 0.0001) {
       await conn.rollback();
+      transactionActive = false;
       return res.status(400).json({
         message: `Submitted amount cannot exceed the remaining required verified balance of ₱${remainingVerifiedBalance.toFixed(2)}.`,
       });
@@ -1459,33 +1982,45 @@ exports.submitDownPayment = async (req, res) => {
       ],
     );
 
-    await conn.execute(
+    // payment_status is intentionally NOT touched here — it changes only
+    // after admin verification and is always derived from verified
+    // payment_transactions rows, never set directly by this endpoint.
+    const [orderUpdateResult] = await conn.execute(
       `UPDATE orders
        SET payment_method = ?,
            payment_proof = ?,
-           payment_status = 'partial',
            updated_at = NOW()
-       WHERE id = ?`,
-      [orderPaymentMethod, proofUrl, order.id],
-    );
-
-    const [bpRows] = await conn.execute(
-      `SELECT creator_id
-       FROM blueprints
        WHERE id = ?
-       LIMIT 1`,
-      [order.blueprint_id],
+         AND customer_id = ?
+         AND order_type = 'blueprint'
+         AND status = 'confirmed'`,
+      [orderPaymentMethod, proofUrl, order.id, req.user.id],
     );
 
-    const blueprint = bpRows[0] || null;
+    if (orderUpdateResult.affectedRows === 0) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(409).json({
+        message:
+          "Order status changed before this could be saved. Please refresh and try again.",
+        integrity_reason: "ORDER_STATE_CHANGED",
+      });
+    }
 
-    await insertNotificationSafe(conn, blueprint?.creator_id, {
+    const [[creatorRow]] = await conn.execute(
+      `SELECT creator_id FROM blueprints WHERE id = ? LIMIT 1`,
+      [blueprint.id],
+    );
+
+    await insertNotificationSafe(conn, creatorRow?.creator_id || null, {
       type: "blueprint_down_payment_submitted",
       title: "30% Down Payment Submitted",
       message: `Customer submitted the 30% down payment for ${order.order_number}. Please verify the payment proof.`,
     });
 
     await conn.commit();
+    transactionActive = false;
+    proofCommitted = true;
 
     return res.json({
       message: "Down payment proof submitted successfully.",
@@ -1494,19 +2029,389 @@ exports.submitDownPayment = async (req, res) => {
       proof_url: proofUrl,
     });
   } catch (err) {
-    if (conn) {
+    if (conn && transactionActive) {
       try {
         await conn.rollback();
-      } catch {}
+        transactionActive = false;
+      } catch (rollbackErr) {
+        console.error(
+          "[customer.customorders SUBMIT DOWN PAYMENT] rollback failed:",
+          rollbackErr.message || rollbackErr,
+        );
+        connectionReusable = false;
+      }
+    }
+    console.error("[customer.customorders SUBMIT DOWN PAYMENT]", err);
+    return res
+      .status(500)
+      .json({ message: "Failed to submit 30% down payment." });
+  } finally {
+    if (conn) {
+      if (connectionReusable) {
+        conn.release();
+      } else {
+        conn.destroy();
+      }
     }
 
-    console.error("[customer.customorders SUBMIT DOWN PAYMENT]", err);
-    return res.status(500).json({
-      message: "Failed to submit 30% down payment.",
-      error: err.message,
+    if (!proofCommitted && req.file?.path) {
+      await cleanupUploadedFile(req.file.path);
+    }
+  }
+};
+
+// This endpoint is only for the LATER remaining-balance payment, once a
+// real contract exists — the exact opposite lifecycle stage from
+// submitDownPayment (which requires NO contract and status==='confirmed'
+// only). The two never overlap and are never merged.
+exports.submitRemainingBalancePayment = async (req, res) => {
+  const orderId = parseStrictPositiveInt(req.params.id);
+  const orderPaymentMethod = toAllowedBlueprintPaymentMethod(
+    req.body?.payment_method,
+  );
+  const txPaymentMethod = toPaymentTransactionMethod(req.body?.payment_method);
+  const submittedAmount = roundMoney(req.body?.amount || 0);
+  const proofUrl = req.file ? `/uploads/proofs/${req.file.filename}` : null;
+
+  let conn = null;
+  let transactionActive = false;
+  let connectionReusable = true;
+  // Set true only once the payment transaction insert and the guarded
+  // order update have both committed successfully. Everything else —
+  // validation failures, lifecycle conflicts, rollbacks, connection
+  // failures — leaves this false, and the finally block below removes
+  // the uploaded file from disk in every one of those cases.
+  let proofCommitted = false;
+
+  try {
+    // Validation checks are inside the try block (not early-returned
+    // before it) specifically so the finally block's cleanup still runs
+    // for them — disk-based Multer has already written req.file to disk
+    // by the time this function runs, even for a request that fails
+    // basic validation.
+    if (!orderId) {
+      return res.status(400).json({ message: "Invalid custom request ID." });
+    }
+
+    if (!orderPaymentMethod || !txPaymentMethod) {
+      return res.status(400).json({
+        message: "Choose a valid payment method for the remaining balance.",
+      });
+    }
+
+    if (!proofUrl) {
+      return res.status(400).json({
+        message: "Upload your proof of payment for the remaining balance.",
+      });
+    }
+
+    if (!(submittedAmount > 0)) {
+      return res.status(400).json({
+        message: "Enter a valid payment amount for this submission.",
+      });
+    }
+
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+    transactionActive = true;
+
+    // Same customer-ownership lock pattern as submitDownPayment — this
+    // order-first lock is what serializes this submission against
+    // another customer payment submission, the rider's
+    // updateDeliveryStatus collection, admin status changes, and any
+    // other order-locked payment flow.
+    const [ownedOrders] = await conn.execute(
+      `SELECT id
+       FROM orders
+       WHERE id = ?
+         AND customer_id = ?
+         AND order_type = 'blueprint'
+       LIMIT 1
+       FOR UPDATE`,
+      [orderId, req.user.id],
+    );
+
+    if (!ownedOrders.length) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(404).json({ message: "Custom request not found." });
+    }
+
+    const lifecycle = await resolveLifecycleByOrder(conn, {
+      orderId,
+      lockOrder: true,
+      lockBlueprint: true,
     });
+
+    if (
+      lifecycle.status !== "OK" ||
+      !lifecycle.order ||
+      !lifecycle.blueprint ||
+      !lifecycle.estimation
+    ) {
+      await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    const order = lifecycle.order;
+    const blueprint = lifecycle.blueprint;
+    const estimation = lifecycle.estimation;
+
+    if (normalize(order.order_type) !== "blueprint") {
+      await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    if (isBlueprintArchived(blueprint)) {
+      await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    // Remaining-balance submission is allowed only in these four stages
+    // — every one of them requires a real contract to already exist.
+    // Confirmed belongs exclusively to submitDownPayment; pending has no
+    // blueprint linkage yet; completed/cancelled are terminal and are
+    // never reopened here.
+    const REMAINING_BALANCE_ALLOWED_STAGES = new Set([
+      "contract_released",
+      "production",
+      "shipping",
+      "delivered",
+    ]);
+
+    if (!REMAINING_BALANCE_ALLOWED_STAGES.has(normalize(order.status))) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message:
+          "The remaining balance can only be submitted after your contract has been released.",
+      });
+    }
+
+    if (normalize(estimation.status) !== "approved") {
+      await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    // The opposite requirement from submitDownPayment: a real contract
+    // MUST already exist. Never created, repaired, relinked, or inferred
+    // here.
+    if (!lifecycle.contract) {
+      await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    const approvedTotal = roundMoney(estimation.grand_total || 0);
+
+    if (!(approvedTotal > 0)) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message: "Quotation total is invalid. Please contact the admin.",
+      });
+    }
+
+    const orderTotal = roundMoney(order.total || 0);
+
+    if (!(orderTotal > 0)) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message: "Order total is not finalized yet. Please contact the admin.",
+      });
+    }
+
+    if (Math.abs(orderTotal - approvedTotal) > 0.01) {
+      await conn.rollback();
+      transactionActive = false;
+      return sendLifecycleConflict(res);
+    }
+
+    // Locked, freshly-read, real payment_transactions rows only — never
+    // trusting the resolver's own (unlocked) totals for this critical
+    // gate, and never a synthetic display row (this table never contains
+    // one; those exist only in the admin getOne response).
+    const [lockedPayments] = await conn.execute(
+      `SELECT
+          id,
+          amount,
+          status,
+          payment_method,
+          proof_url
+       FROM payment_transactions
+       WHERE order_id = ?
+       ORDER BY id
+       FOR UPDATE`,
+      [order.id],
+    );
+
+    const verifiedPaymentTotal = roundMoney(
+      lockedPayments
+        .filter((row) => normalize(row.status) === "verified")
+        .reduce((sum, row) => {
+          const amount = Number(row.amount);
+          return Number.isFinite(amount) && amount > 0 ? sum + amount : sum;
+        }, 0),
+    );
+
+    const pendingPaymentTotal = roundMoney(
+      lockedPayments
+        .filter((row) => normalize(row.status) === "pending")
+        .reduce((sum, row) => {
+          const amount = Number(row.amount);
+          return Number.isFinite(amount) && amount > 0 ? sum + amount : sum;
+        }, 0),
+    );
+
+    const hasPendingPayment = lockedPayments.some(
+      (row) => normalize(row.status) === "pending",
+    );
+
+    // The initial 30% must already be verified — real, verified
+    // transactions only; pending and rejected amounts never count.
+    const requiredInitialDownPayment = calcDownPaymentAmount(approvedTotal);
+
+    if (verifiedPaymentTotal + 0.0001 < requiredInitialDownPayment) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message:
+          "The initial 30% down payment must be verified before submitting the remaining balance.",
+      });
+    }
+
+    const remainingBalance = roundMoney(
+      Math.max(approvedTotal - verifiedPaymentTotal, 0),
+    );
+
+    if (!(remainingBalance > 0) || verifiedPaymentTotal >= approvedTotal) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message: "This order is already fully paid.",
+      });
+    }
+
+    // Only one pending payment proof may exist at a time — the same rule
+    // as the initial endpoint. Multiple resolved submissions may still
+    // add up toward the full total over time, just never simultaneously.
+    if (hasPendingPayment) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message:
+          "A payment proof is already awaiting review for this order. Please wait for it to be verified or rejected before submitting another.",
+      });
+    }
+
+    // The client may submit any positive amount up to the true remaining
+    // balance — never required to pay it off in a single proof. The
+    // Phase B2F-B admin verify-time overpayment gate remains the final
+    // backstop regardless of this check.
+    if (submittedAmount - remainingBalance > 0.0001) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message: `Submitted amount cannot exceed the remaining balance of ₱${remainingBalance.toFixed(2)}.`,
+      });
+    }
+
+    // Pending only — never verified, never marks the order paid. Admin
+    // verification remains required.
+    await conn.execute(
+      `INSERT INTO payment_transactions
+        (order_id, amount, payment_method, proof_url, status, notes)
+      VALUES (?, ?, ?, ?, 'pending', ?)`,
+      [
+        order.id,
+        submittedAmount,
+        txPaymentMethod,
+        proofUrl,
+        "Customer submitted remaining-balance payment proof for custom blueprint order.",
+      ],
+    );
+
+    // Same restricted, canonical-order-only update as submitDownPayment —
+    // never touches payment_status, order status, total, down_payment,
+    // contract, or blueprint linkage.
+    const [orderUpdateResult] = await conn.execute(
+      `UPDATE orders
+       SET payment_method = ?,
+           payment_proof = ?,
+           updated_at = NOW()
+       WHERE id = ?
+         AND customer_id = ?
+         AND order_type = 'blueprint'
+         AND status IN ('contract_released', 'production', 'shipping', 'delivered')`,
+      [orderPaymentMethod, proofUrl, order.id, req.user.id],
+    );
+
+    if (orderUpdateResult.affectedRows === 0) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(409).json({
+        message:
+          "Order status changed before this could be saved. Please refresh and try again.",
+        integrity_reason: "ORDER_STATE_CHANGED",
+      });
+    }
+
+    const [[creatorRow]] = await conn.execute(
+      `SELECT creator_id FROM blueprints WHERE id = ? LIMIT 1`,
+      [blueprint.id],
+    );
+
+    await insertNotificationSafe(conn, creatorRow?.creator_id || null, {
+      type: "blueprint_remaining_balance_submitted",
+      title: "Remaining Balance Payment Submitted",
+      message: `Customer submitted a remaining-balance payment proof for ${order.order_number}. Please verify the payment proof.`,
+    });
+
+    await conn.commit();
+    transactionActive = false;
+    proofCommitted = true;
+
+    return res.json({
+      message: "Remaining-balance payment proof submitted successfully.",
+      submitted_amount: submittedAmount,
+      verified_total: verifiedPaymentTotal,
+      remaining_before_submission: remainingBalance,
+      proof_url: proofUrl,
+    });
+  } catch (err) {
+    if (conn && transactionActive) {
+      try {
+        await conn.rollback();
+        transactionActive = false;
+      } catch (rollbackErr) {
+        console.error(
+          "[customer.customorders SUBMIT REMAINING BALANCE] rollback failed:",
+          rollbackErr.message || rollbackErr,
+        );
+        connectionReusable = false;
+      }
+    }
+    console.error("[customer.customorders SUBMIT REMAINING BALANCE]", err);
+    return res
+      .status(500)
+      .json({ message: "Failed to submit remaining-balance payment." });
   } finally {
-    if (conn) conn.release();
+    if (conn) {
+      if (connectionReusable) {
+        conn.release();
+      } else {
+        conn.destroy();
+      }
+    }
+
+    if (!proofCommitted && req.file?.path) {
+      await cleanupUploadedFile(req.file.path);
+    }
   }
 };
 

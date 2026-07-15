@@ -158,43 +158,11 @@ function estimateTextBlockHeight(
   return height;
 }
 
-function extractEstimationStatus(data) {
-  const candidates = [
-    data?.status,
-    data?.estimation_status,
-    data?.latest?.status,
-    data?.latest_estimation?.status,
-    data?.estimation?.status,
-    data?.data?.status,
-  ];
-
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim()) {
-      return normalize(candidate);
-    }
-  }
-
-  if (Array.isArray(data)) {
-    for (const row of data) {
-      if (typeof row?.status === "string" && row.status.trim()) {
-        return normalize(row.status);
-      }
-    }
-  }
-
-  if (Array.isArray(data?.rows)) {
-    for (const row of data.rows) {
-      if (typeof row?.status === "string" && row.status.trim()) {
-        return normalize(row.status);
-      }
-    }
-  }
-
-  return "";
-}
-
 function isPositiveIntegerString(value) {
-  return /^\d+$/.test(String(value || "").trim()) && Number(value) > 0;
+  const text = String(value ?? "").trim();
+  if (!/^[1-9][0-9]*$/.test(text)) return false;
+  const parsed = Number(text);
+  return Number.isSafeInteger(parsed) && parsed > 0;
 }
 
 export default function ContractsPage() {
@@ -211,7 +179,7 @@ export default function ContractsPage() {
   const [loadingOrderInfo, setLoadingOrderInfo] = useState(false);
   const [orderInfoError, setOrderInfoError] = useState("");
 
-  const [estimationStatus, setEstimationStatus] = useState("");
+  const [estimationResponse, setEstimationResponse] = useState(null);
   const [loadingEstimation, setLoadingEstimation] = useState(false);
   const [estimationError, setEstimationError] = useState("");
 
@@ -231,7 +199,7 @@ export default function ContractsPage() {
     });
     setSelectedOrderInfo(null);
     setOrderInfoError("");
-    setEstimationStatus("");
+    setEstimationResponse(null);
     setEstimationError("");
   };
 
@@ -315,20 +283,44 @@ export default function ContractsPage() {
 
   const manualBlueprintId = String(form.blueprint_id || "").trim();
 
-  const resolvedBlueprintId = useMemo(() => {
-    if (manualBlueprintId) return manualBlueprintId;
+  // Canonical blueprint id comes ONLY from the loaded order — never from
+  // manual/navigation-supplied input, and never from an existing
+  // contract's own blueprint_id (an eligible order must not already have
+  // a contract in the first place, so that fallback made no sense as a
+  // source of truth for a NEW contract).
+  const canonicalBlueprintId = selectedOrderInfo?.blueprint_id
+    ? String(selectedOrderInfo.blueprint_id)
+    : "";
 
-    const fromOrder =
-      selectedOrderInfo?.blueprint_id ||
-      selectedOrderInfo?.contract?.blueprint_id ||
-      "";
+  // Strict validation of the canonical id itself — even though it comes
+  // from the order (not user input), it's validated with the same
+  // strict rule before ever being used for a lookup or a submit, so a
+  // malformed/unexpected value from the order record can never silently
+  // pass through as "0", a decimal, scientific notation, etc.
+  const canonicalBlueprintValid = isPositiveIntegerString(canonicalBlueprintId);
 
-    return fromOrder ? String(fromOrder) : "";
-  }, [manualBlueprintId, selectedOrderInfo]);
+  const manualBlueprintInvalid =
+    manualBlueprintId && !isPositiveIntegerString(manualBlueprintId);
+
+  // The manual/navigation-draft value is only ever a consistency check —
+  // it never overrides the canonical id, and never controls lookup or
+  // submit. This also naturally covers the navigation-draft mismatch
+  // case: location.state.contractDraft.blueprint_id lands in
+  // form.blueprint_id the same way a manually-typed value would.
+  const manualBlueprintMismatch =
+    Boolean(manualBlueprintId) &&
+    !manualBlueprintInvalid &&
+    Boolean(canonicalBlueprintId) &&
+    manualBlueprintId !== canonicalBlueprintId;
 
   useEffect(() => {
-    if (!modal || !form.order_id || !resolvedBlueprintId) {
-      setEstimationStatus("");
+    if (
+      !modal ||
+      !form.order_id ||
+      !canonicalBlueprintId ||
+      !canonicalBlueprintValid
+    ) {
+      setEstimationResponse(null);
       setEstimationError("");
       return;
     }
@@ -337,26 +329,39 @@ export default function ContractsPage() {
 
     const fetchEstimation = async () => {
       setLoadingEstimation(true);
-      setEstimationStatus("");
+      setEstimationResponse(null);
       setEstimationError("");
 
       try {
         const { data } = await api.get(
-          `/blueprints/${resolvedBlueprintId}/estimation`,
+          `/blueprints/${canonicalBlueprintId}/estimation`,
         );
-        const nextStatus = extractEstimationStatus(data);
 
-        if (!cancelled) {
-          if (nextStatus) {
-            setEstimationStatus(nextStatus);
-          } else {
-            setEstimationError(
-              "No saved estimation was found for the linked blueprint.",
-            );
-          }
+        if (cancelled) return;
+
+        // Block immediately on any integrity/recovery-draft/unpersisted
+        // signal — never treat an unpersisted recovery draft, a stale
+        // record, or a multiple-owner conflict as a normal saved,
+        // approved estimation just because `status` happens to say
+        // "approved".
+        if (
+          data?.integrity_warning ||
+          data?.is_recovery_draft ||
+          data?.persisted === false ||
+          data?.id == null
+        ) {
+          setEstimationResponse(null);
+          setEstimationError(
+            data?.message ||
+              "No saved, approved estimation was found for the linked blueprint.",
+          );
+          return;
         }
+
+        setEstimationResponse(data);
       } catch (err) {
         if (!cancelled) {
+          setEstimationResponse(null);
           setEstimationError(
             err?.response?.data?.message ||
               "Failed to check blueprint estimation status.",
@@ -374,7 +379,7 @@ export default function ContractsPage() {
     return () => {
       cancelled = true;
     };
-  }, [modal, form.order_id, resolvedBlueprintId]);
+  }, [modal, form.order_id, canonicalBlueprintId, canonicalBlueprintValid]);
 
   const setF = (key, value) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -388,7 +393,7 @@ export default function ContractsPage() {
     }));
     setSelectedOrderInfo(null);
     setOrderInfoError("");
-    setEstimationStatus("");
+    setEstimationResponse(null);
     setEstimationError("");
   };
 
@@ -716,7 +721,10 @@ export default function ContractsPage() {
   );
 
   const availableOrders = orders.filter(
-    (o) => !contractedOrderIds.has(String(o.id)),
+    (o) =>
+      normalize(o.order_type) === "blueprint" &&
+      normalize(o.status) === "confirmed" &&
+      !contractedOrderIds.has(String(o.id)),
   );
 
   const duplicateOrderIds = useMemo(() => {
@@ -737,7 +745,19 @@ export default function ContractsPage() {
     ? selectedOrderInfo.payments
     : [];
 
-  const verifiedPayments = paymentRows.filter(
+  // orderController.getOne may append a synthetic legacy row
+  // (id: `initial_${order.id}`) when no real payment_transactions row
+  // exists, derived from order.payment_status rather than an actual
+  // verified transaction. That row — and selectedOrderInfo's own
+  // payment_verified_total, which is computed from the same
+  // synthetic-row-inclusive array on the backend — must never
+  // contribute to contract eligibility. Only rows with a real,
+  // persisted, strictly-numeric database id are counted here.
+  const persistedPaymentRows = paymentRows.filter((payment) =>
+    isPositiveIntegerString(payment?.id),
+  );
+
+  const verifiedPayments = persistedPaymentRows.filter(
     (payment) => normalize(payment?.status) === "verified",
   );
 
@@ -746,45 +766,119 @@ export default function ContractsPage() {
     0,
   );
 
-  const orderTotalAmount = Number(selectedOrderInfo?.total_amount || 0);
-  const minimumDownPayment = orderTotalAmount * 0.3;
-
   const hasVerifiedPayment = verifiedPayments.length > 0;
 
+  // Estimation eligibility — derived entirely from the full stored
+  // response, never from a bare extracted status string. An unpersisted
+  // recovery draft, a stale/blocked record, or a missing id can never
+  // read as "approved" here, regardless of what estimationResponse.status
+  // itself says.
+  const estimationIntegrityBlocked =
+    Boolean(estimationResponse?.integrity_warning) ||
+    Boolean(estimationResponse?.is_recovery_draft) ||
+    estimationResponse?.persisted === false ||
+    estimationResponse?.id == null;
+
+  const estimationGrandTotal = Number(estimationResponse?.grand_total);
+
+  const estimationEligible =
+    Boolean(estimationResponse) &&
+    !estimationIntegrityBlocked &&
+    normalize(estimationResponse?.status) === "approved" &&
+    Number.isFinite(estimationGrandTotal) &&
+    estimationGrandTotal > 0;
+
+  const approvedEstimationTotal = estimationEligible ? estimationGrandTotal : 0;
+
+  const orderTotalAmount = Number(selectedOrderInfo?.total_amount || 0);
+
+  // Required down payment is always 30% of the APPROVED ESTIMATION total,
+  // never derived from an unverified/corrupted order total alone. Rounded
+  // to two decimals exactly like the backend's
+  // Number((estimationGrandTotal * 0.3).toFixed(2)) so the two never
+  // disagree at a cent boundary.
+  const requiredDownPayment = Number(
+    (approvedEstimationTotal * 0.3).toFixed(2),
+  );
+
+  const totalsMatch =
+    approvedEstimationTotal > 0 &&
+    orderTotalAmount > 0 &&
+    Math.abs(orderTotalAmount - approvedEstimationTotal) <= 0.01;
+
+  // Verified payment_transactions rows only — orders.payment_status and
+  // payment_status_display are display-only and never authorize contract
+  // generation (an order could read "paid" from a stale/corrupted total
+  // while having zero actual verified transactions behind it).
   const paymentReady =
-    normalize(
-      selectedOrderInfo?.payment_status_display ||
-        selectedOrderInfo?.payment_status,
-    ) === "paid" ||
-    verifiedPaymentTotal >= Math.max(0, minimumDownPayment - 0.01);
+    estimationEligible &&
+    verifiedPaymentTotal >= Math.max(0, requiredDownPayment - 0.01);
 
   const currentOrderStatus = normalize(
     selectedOrderInfo?.status || selectedOrderInfo?.raw_status,
   );
 
-  const blockedOrderStatus = [
-    "cancelled",
-    "completed",
+  const orderTypeValid =
+    Boolean(selectedOrderInfo) &&
+    normalize(selectedOrderInfo?.order_type) === "blueprint";
+
+  const orderStatusConfirmed = currentOrderStatus === "confirmed";
+
+  // Explicit block list (rather than "not confirmed") purely so the UI
+  // can name the exact status a blocked order is sitting in — every one
+  // of these, plus any unknown/empty value, resolves to the same
+  // !orderStatusConfirmed condition underneath.
+  const EXPLICITLY_BLOCKED_ORDER_STATUSES = [
+    "pending",
+    "contract_released",
+    "production",
     "shipping",
     "delivered",
-  ].includes(currentOrderStatus);
+    "completed",
+    "cancelled",
+  ];
+  const orderStatusBlocked =
+    EXPLICITLY_BLOCKED_ORDER_STATUSES.includes(currentOrderStatus) ||
+    !orderStatusConfirmed;
 
   const hasExistingContract = Boolean(selectedOrderInfo?.contract);
 
-  const manualBlueprintInvalid =
-    manualBlueprintId && !isPositiveIntegerString(manualBlueprintId);
+  const lifecycleIntegrityWarning = Boolean(
+    selectedOrderInfo?.lifecycle_integrity_warning,
+  );
+  const lifecycleIntegrityReason =
+    selectedOrderInfo?.lifecycle_integrity_reason || "";
+  const conflictingOrderIds = Array.isArray(
+    selectedOrderInfo?.conflicting_order_ids,
+  )
+    ? selectedOrderInfo.conflicting_order_ids
+    : null;
+
+  const hasCustomerId = Boolean(selectedOrderInfo?.customer_id);
+
+  const contractTermsReady = Boolean(String(form.terms || "").trim());
+  const warrantyTermsReady = Boolean(String(form.warranty_terms || "").trim());
 
   const validationItems = [
     {
       label: "Order selected",
-      ok: Boolean(form.order_id),
+      ok: Boolean(form.order_id) && isPositiveIntegerString(form.order_id),
       value: form.order_id
         ? `#${String(form.order_id).padStart(5, "0")}`
         : "Required",
     },
     {
-      label: "Order status",
-      ok: Boolean(selectedOrderInfo) && !blockedOrderStatus,
+      label: "Order type",
+      ok: orderTypeValid,
+      value: selectedOrderInfo
+        ? titleCase(selectedOrderInfo.order_type)
+        : loadingOrderInfo
+          ? "Checking..."
+          : "Not loaded",
+    },
+    {
+      label: "Order status (must be confirmed)",
+      ok: Boolean(selectedOrderInfo) && orderStatusConfirmed,
       value: loadingOrderInfo
         ? "Checking..."
         : selectedOrderInfo
@@ -792,84 +886,121 @@ export default function ContractsPage() {
           : orderInfoError || "Not loaded",
     },
     {
-      label: "Blueprint reference",
-      ok: Boolean(resolvedBlueprintId) && !manualBlueprintInvalid,
-      value: manualBlueprintInvalid
-        ? "Invalid manual blueprint ID"
-        : resolvedBlueprintId
-          ? `BP-${String(resolvedBlueprintId).padStart(5, "0")}`
-          : "Missing linked blueprint",
+      label: "Customer on order",
+      ok: hasCustomerId,
+      value: hasCustomerId
+        ? formatPersonName(selectedOrderInfo?.customer_name) || "Linked"
+        : "Missing customer on order",
     },
     {
-      label: "Payment requirement",
-      ok: Boolean(selectedOrderInfo) && paymentReady,
-      value: loadingOrderInfo
-        ? "Checking..."
-        : selectedOrderInfo
-          ? normalize(
-              selectedOrderInfo.payment_status_display ||
-                selectedOrderInfo.payment_status,
-            ) === "paid"
-            ? "Order marked as paid"
-            : hasVerifiedPayment
-              ? `Verified ₱ ${verifiedPaymentTotal.toLocaleString("en-PH", {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                })} / Required ₱ ${minimumDownPayment.toLocaleString("en-PH", {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                })}`
-              : `At least 30% verified down payment required`
-          : "Not checked",
+      label: "Existing contract",
+      ok: !hasExistingContract,
+      value: hasExistingContract
+        ? "A contract already exists for this order"
+        : "None",
     },
     {
-      label: "Estimation approval",
-      ok: Boolean(resolvedBlueprintId) && estimationStatus === "approved",
-      value: !resolvedBlueprintId
-        ? "Waiting for blueprint reference"
+      label: "Lifecycle integrity",
+      ok: Boolean(selectedOrderInfo) && !lifecycleIntegrityWarning,
+      value: !selectedOrderInfo
+        ? "Not loaded"
+        : lifecycleIntegrityWarning
+          ? titleCase(lifecycleIntegrityReason) ||
+            "Lifecycle integrity conflict — manual review required"
+          : "OK",
+    },
+    {
+      label: "Canonical blueprint",
+      ok:
+        Boolean(canonicalBlueprintId) &&
+        canonicalBlueprintValid &&
+        !manualBlueprintMismatch,
+      value: manualBlueprintMismatch
+        ? "Entered blueprint ID does not match this order's linked blueprint"
+        : manualBlueprintInvalid
+          ? "Invalid manual blueprint ID"
+          : canonicalBlueprintId && !canonicalBlueprintValid
+            ? "Invalid canonical blueprint ID on order"
+            : canonicalBlueprintId
+              ? `BP-${String(canonicalBlueprintId).padStart(5, "0")}`
+              : "Missing linked blueprint",
+    },
+    {
+      label: "Saved estimation",
+      ok: estimationEligible,
+      value: !canonicalBlueprintId
+        ? "Waiting for canonical blueprint"
         : loadingEstimation
           ? "Checking..."
-          : estimationStatus
-            ? titleCase(estimationStatus)
-            : estimationError || "Not checked",
+          : estimationEligible
+            ? "Approved and saved"
+            : estimationError || "Not available",
+    },
+    {
+      label: "Approved estimation total",
+      ok: approvedEstimationTotal > 0,
+      value:
+        approvedEstimationTotal > 0
+          ? formatCurrencyUI(approvedEstimationTotal)
+          : "Not available",
+    },
+    {
+      label: "Order / estimation total match",
+      ok: totalsMatch,
+      value: totalsMatch
+        ? `${formatCurrencyUI(orderTotalAmount)} matches estimation`
+        : "Order total does not match the approved estimation total",
+    },
+    {
+      label: "Verified payment (30% required)",
+      ok: paymentReady,
+      value: !estimationEligible
+        ? "Waiting for approved estimation"
+        : hasVerifiedPayment
+          ? `Verified ${formatCurrencyUI(verifiedPaymentTotal)} / Required ${formatCurrencyUI(requiredDownPayment)}`
+          : `At least 30% verified down payment required (Required ${formatCurrencyUI(requiredDownPayment)})`,
     },
     {
       label: "Contract terms",
-      ok: Boolean(String(form.terms || "").trim()),
-      value: String(form.terms || "").trim()
-        ? "Ready"
-        : "Contract terms are required",
+      ok: contractTermsReady,
+      value: contractTermsReady ? "Ready" : "Contract terms are required",
     },
     {
       label: "Warranty terms",
-      ok: Boolean(String(form.warranty_terms || "").trim()),
-      value: String(form.warranty_terms || "").trim()
-        ? "Ready"
-        : "Warranty terms are required",
+      ok: warrantyTermsReady,
+      value: warrantyTermsReady ? "Ready" : "Warranty terms are required",
     },
   ];
 
   const canSubmit =
     Boolean(form.order_id) &&
+    isPositiveIntegerString(form.order_id) &&
     !saving &&
     !loadingOrderInfo &&
     !loadingEstimation &&
     !orderInfoError &&
-    !manualBlueprintInvalid &&
     Boolean(selectedOrderInfo) &&
-    !blockedOrderStatus &&
+    orderTypeValid &&
+    orderStatusConfirmed &&
+    hasCustomerId &&
     !hasExistingContract &&
-    Boolean(resolvedBlueprintId) &&
+    !lifecycleIntegrityWarning &&
+    Boolean(canonicalBlueprintId) &&
+    canonicalBlueprintValid &&
+    !manualBlueprintInvalid &&
+    !manualBlueprintMismatch &&
+    estimationEligible &&
+    orderTotalAmount > 0 &&
+    totalsMatch &&
     paymentReady &&
-    estimationStatus === "approved" &&
-    Boolean(String(form.terms || "").trim()) &&
-    Boolean(String(form.warranty_terms || "").trim());
+    contractTermsReady &&
+    warrantyTermsReady;
 
   const handleGenerate = async (e) => {
     e.preventDefault();
 
-    if (!form.order_id) {
-      toast.error("Please select an order.");
+    if (!form.order_id || !isPositiveIntegerString(form.order_id)) {
+      toast.error("Please select a valid order.");
       return;
     }
 
@@ -892,14 +1023,34 @@ export default function ContractsPage() {
       return;
     }
 
+    if (!orderTypeValid) {
+      toast.error("Contracts can only be generated for blueprint orders.");
+      return;
+    }
+
+    if (!orderStatusConfirmed) {
+      toast.error(
+        `Order must be exactly "confirmed" to generate a contract (current status: "${currentOrderStatus || "unknown"}").`,
+      );
+      return;
+    }
+
+    if (!hasCustomerId) {
+      toast.error(
+        "This order has no linked customer account; a contract requires a registered customer.",
+      );
+      return;
+    }
+
     if (hasExistingContract) {
       toast.error("A contract already exists for this order.");
       return;
     }
 
-    if (blockedOrderStatus) {
+    if (lifecycleIntegrityWarning) {
       toast.error(
-        "Contract can only be generated for active blueprint orders.",
+        titleCase(lifecycleIntegrityReason) ||
+          "This order has a lifecycle integrity conflict and requires manual review before a contract can be generated.",
       );
       return;
     }
@@ -909,26 +1060,23 @@ export default function ContractsPage() {
       return;
     }
 
-    if (!resolvedBlueprintId) {
+    if (manualBlueprintMismatch) {
+      toast.error(
+        "The entered blueprint ID does not match this order's linked blueprint.",
+      );
+      return;
+    }
+
+    if (!canonicalBlueprintId) {
       toast.error(
         "A linked blueprint is required before generating a contract.",
       );
       return;
     }
 
-    if (!String(form.terms || "").trim()) {
-      toast.error("Contract terms are required.");
-      return;
-    }
-
-    if (!String(form.warranty_terms || "").trim()) {
-      toast.error("Warranty terms are required.");
-      return;
-    }
-
-    if (!paymentReady) {
+    if (!canonicalBlueprintValid) {
       toast.error(
-        "At least 30% verified down payment or full paid status is required before generating a contract.",
+        "This order's linked blueprint ID is invalid. Please contact support.",
       );
       return;
     }
@@ -940,19 +1088,60 @@ export default function ContractsPage() {
       return;
     }
 
-    if (estimationStatus !== "approved") {
+    if (!estimationEligible) {
       toast.error(
         estimationError ||
-          "Only approved estimations can proceed to contract generation.",
+          "Only a saved, approved estimation can proceed to contract generation.",
       );
+      return;
+    }
+
+    if (!(orderTotalAmount > 0)) {
+      toast.error("Order total must be finalized before generating a contract.");
+      return;
+    }
+
+    if (!totalsMatch) {
+      toast.error(
+        "Order total does not match the approved estimation total.",
+      );
+      return;
+    }
+
+    if (!paymentReady) {
+      toast.error(
+        "At least 30% verified down payment is required before generating a contract.",
+      );
+      return;
+    }
+
+    if (!contractTermsReady) {
+      toast.error("Contract terms are required.");
+      return;
+    }
+
+    if (!warrantyTermsReady) {
+      toast.error("Warranty terms are required.");
+      return;
+    }
+
+    if (!canSubmit) {
+      // Defensive final backstop — every specific condition above should
+      // already have caught the reason.
+      toast.error("This contract cannot be generated right now.");
       return;
     }
 
     setSaving(true);
     try {
+      // Canonical payload only — order_id and the canonical blueprint id
+      // (never the manual/navigation-supplied value, and never any
+      // server-owned field like customer_id, customer_name, total,
+      // down_payment, or authorized_by; the backend derives all of those
+      // itself from the locked, canonical order).
       const payload = {
         order_id: Number(form.order_id),
-        blueprint_id: manualBlueprintId ? Number(manualBlueprintId) : null,
+        blueprint_id: Number(canonicalBlueprintId),
         terms: String(form.terms || "").trim(),
         warranty_terms: String(form.warranty_terms || "").trim(),
       };
@@ -964,6 +1153,8 @@ export default function ContractsPage() {
       resetForm();
       load();
     } catch (err) {
+      // Preserve the modal and the user's entered terms on failure — do
+      // not reset the form or imply a contract was generated.
       toast.error(
         err?.response?.data?.message || "Failed to generate contract.",
       );
@@ -1206,13 +1397,18 @@ export default function ContractsPage() {
               </div>
 
               <div style={{ marginBottom: 20 }}>
-                <label style={labelSm}>Blueprint ID</label>
+                <label style={labelSm}>Linked blueprint (from order)</label>
                 <input
-                  type="number"
-                  value={form.blueprint_id}
-                  onChange={(e) => setF("blueprint_id", e.target.value)}
-                  style={inputFull}
-                  placeholder="Leave blank only if the selected order already has a linked blueprint"
+                  type="text"
+                  value={
+                    canonicalBlueprintId
+                      ? `BP-${String(canonicalBlueprintId).padStart(5, "0")}`
+                      : selectedOrderInfo
+                        ? "No blueprint linked to this order"
+                        : "Select an order to load its linked blueprint"
+                  }
+                  readOnly
+                  style={{ ...inputFull, background: "#f4f4f5", color: "#52525b" }}
                 />
                 <p
                   style={{
@@ -1222,8 +1418,31 @@ export default function ContractsPage() {
                     fontWeight: 500,
                   }}
                 >
-                  Manual override only. If the selected order already has a
-                  blueprint attached, it will be used automatically.
+                  The blueprint used for this contract always comes from the
+                  selected order — it is never chosen manually.
+                </p>
+
+                <label style={{ ...labelSm, marginTop: 14, display: "block" }}>
+                  Blueprint ID reference check (optional)
+                </label>
+                <input
+                  type="number"
+                  value={form.blueprint_id}
+                  onChange={(e) => setF("blueprint_id", e.target.value)}
+                  style={inputFull}
+                  placeholder="Optional — only checked against the order's linked blueprint above"
+                />
+                <p
+                  style={{
+                    fontSize: 11,
+                    color: manualBlueprintMismatch ? "#dc2626" : "#71717a",
+                    marginTop: 6,
+                    fontWeight: manualBlueprintMismatch ? 700 : 500,
+                  }}
+                >
+                  {manualBlueprintMismatch
+                    ? "This does not match the order's linked blueprint above — contract generation is blocked until this is cleared or corrected."
+                    : "This value is only used to verify it matches the order's linked blueprint (e.g. when opened from another page). It never replaces or controls which blueprint is used."}
                 </p>
               </div>
 
@@ -1242,82 +1461,110 @@ export default function ContractsPage() {
                       <div style={eligibilityGrid}>
                         <EligibilityItem
                           label="Customer"
-                          ok={Boolean(selectedOrderInfo?.customer_name)}
+                          ok={hasCustomerId}
                           value={
                             formatPersonName(
                               selectedOrderInfo?.customer_name,
-                            ) || "—"
+                            ) || (hasCustomerId ? "Linked" : "Missing customer on order")
                           }
                         />
                         <EligibilityItem
                           label="Order Amount"
-                          ok
-                          value={formatCurrencyUI(
-                            selectedOrderInfo?.total_amount || 0,
-                          )}
+                          ok={orderTotalAmount > 0}
+                          value={formatCurrencyUI(orderTotalAmount)}
                         />
                         <EligibilityItem
-                          label="Order Status"
-                          ok={!blockedOrderStatus}
+                          label="Order Type"
+                          ok={orderTypeValid}
+                          value={titleCase(selectedOrderInfo?.order_type)}
+                        />
+                        <EligibilityItem
+                          label="Order Status (must be confirmed)"
+                          ok={orderStatusConfirmed}
                           value={titleCase(
                             selectedOrderInfo?.status ||
                               selectedOrderInfo?.raw_status,
                           )}
                         />
                         <EligibilityItem
-                          label="Blueprint Ref"
-                          ok={
-                            Boolean(resolvedBlueprintId) &&
-                            !manualBlueprintInvalid
-                          }
+                          label="Existing Contract"
+                          ok={!hasExistingContract}
                           value={
-                            manualBlueprintInvalid
-                              ? "Invalid manual blueprint ID"
-                              : resolvedBlueprintId
-                                ? `BP-${String(resolvedBlueprintId).padStart(5, "0")}`
-                                : "Missing linked blueprint"
+                            hasExistingContract
+                              ? "A contract already exists for this order"
+                              : "None"
                           }
                         />
                         <EligibilityItem
-                          label="Payment"
-                          ok={paymentReady}
+                          label="Lifecycle Integrity"
+                          ok={!lifecycleIntegrityWarning}
                           value={
-                            normalize(
-                              selectedOrderInfo?.payment_status_display ||
-                                selectedOrderInfo?.payment_status,
-                            ) === "paid"
-                              ? "Order marked as paid"
-                              : hasVerifiedPayment
-                                ? `Verified ₱ ${verifiedPaymentTotal.toLocaleString(
-                                    "en-PH",
-                                    {
-                                      minimumFractionDigits: 2,
-                                      maximumFractionDigits: 2,
-                                    },
-                                  )} / Required ₱ ${minimumDownPayment.toLocaleString(
-                                    "en-PH",
-                                    {
-                                      minimumFractionDigits: 2,
-                                      maximumFractionDigits: 2,
-                                    },
-                                  )}`
-                                : "At least 30% verified down payment required"
+                            lifecycleIntegrityWarning
+                              ? titleCase(lifecycleIntegrityReason) ||
+                                "Conflict — manual review required"
+                              : "OK"
                           }
                         />
                         <EligibilityItem
-                          label="Estimation"
+                          label="Canonical Blueprint"
                           ok={
-                            Boolean(resolvedBlueprintId) &&
-                            estimationStatus === "approved"
+                            Boolean(canonicalBlueprintId) &&
+                            canonicalBlueprintValid &&
+                            !manualBlueprintInvalid &&
+                            !manualBlueprintMismatch
                           }
                           value={
-                            !resolvedBlueprintId
-                              ? "Waiting for blueprint reference"
+                            manualBlueprintMismatch
+                              ? "Entered ID does not match order's blueprint"
+                              : manualBlueprintInvalid
+                                ? "Invalid manual blueprint ID"
+                                : canonicalBlueprintId && !canonicalBlueprintValid
+                                  ? "Invalid canonical blueprint ID on order"
+                                  : canonicalBlueprintId
+                                    ? `BP-${String(canonicalBlueprintId).padStart(5, "0")}`
+                                    : "Missing linked blueprint"
+                          }
+                        />
+                        <EligibilityItem
+                          label="Saved Estimation"
+                          ok={estimationEligible}
+                          value={
+                            !canonicalBlueprintId
+                              ? "Waiting for canonical blueprint"
                               : loadingEstimation
                                 ? "Checking..."
-                                : estimationStatus
-                                  ? titleCase(estimationStatus)
-                                  : estimationError || "Not checked"
+                                : estimationEligible
+                                  ? "Approved and saved"
+                                  : estimationError || "Not available"
+                          }
+                        />
+                        <EligibilityItem
+                          label="Approved Estimation Total"
+                          ok={approvedEstimationTotal > 0}
+                          value={
+                            approvedEstimationTotal > 0
+                              ? formatCurrencyUI(approvedEstimationTotal)
+                              : "Not available"
+                          }
+                        />
+                        <EligibilityItem
+                          label="Order / Estimation Total Match"
+                          ok={totalsMatch}
+                          value={
+                            totalsMatch
+                              ? "Matches"
+                              : "Order total does not match the approved estimation total"
+                          }
+                        />
+                        <EligibilityItem
+                          label="Verified Payment (30% required)"
+                          ok={paymentReady}
+                          value={
+                            !estimationEligible
+                              ? "Waiting for approved estimation"
+                              : hasVerifiedPayment
+                                ? `Verified ${formatCurrencyUI(verifiedPaymentTotal)} / Required ${formatCurrencyUI(requiredDownPayment)}`
+                                : `At least 30% verified down payment required (Required ${formatCurrencyUI(requiredDownPayment)})`
                           }
                         />
                       </div>
@@ -1328,10 +1575,37 @@ export default function ContractsPage() {
                         </div>
                       )}
 
-                      {blockedOrderStatus && (
+                      {lifecycleIntegrityWarning && (
                         <div style={{ ...errorBox, marginTop: 16 }}>
-                          This order is no longer eligible because it is already{" "}
-                          {titleCase(currentOrderStatus)}.
+                          This order's blueprint lifecycle has an integrity
+                          conflict
+                          {lifecycleIntegrityReason
+                            ? ` (${titleCase(lifecycleIntegrityReason)})`
+                            : ""}
+                          . Manual review is required before a contract can be
+                          generated.
+                          {conflictingOrderIds && conflictingOrderIds.length ? (
+                            <>
+                              {" "}
+                              Conflicting order IDs:{" "}
+                              {conflictingOrderIds.join(", ")}.
+                            </>
+                          ) : null}
+                        </div>
+                      )}
+
+                      {!lifecycleIntegrityWarning && orderStatusBlocked && (
+                        <div style={{ ...errorBox, marginTop: 16 }}>
+                          This order is no longer eligible because it is
+                          already {titleCase(currentOrderStatus) || "in an unknown status"}.
+                        </div>
+                      )}
+
+                      {manualBlueprintMismatch && (
+                        <div style={{ ...errorBox, marginTop: 16 }}>
+                          The entered blueprint ID does not match this
+                          order&apos;s linked blueprint. Contract generation is
+                          blocked until this is cleared or corrected.
                         </div>
                       )}
                     </>

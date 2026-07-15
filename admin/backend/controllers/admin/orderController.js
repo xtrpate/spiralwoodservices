@@ -2,6 +2,9 @@
 // controllers/orderController.js – Order Management (Admin) [SCHEMA-CORRECTED]
 const pool = require("../../config/db");
 const { signUploadPath } = require("../../utils/signedUrl");
+const {
+  resolveLifecycleByOrder,
+} = require("../../services/blueprintLifecycleService");
 
 const normalize = (value) =>
   String(value || "")
@@ -644,7 +647,7 @@ exports.getOne = async (req, res) => {
       Boolean(item.customization),
     );
 
-    const [payments] = await pool.query(
+    const [paymentTransactions] = await pool.query(
       `SELECT 
           pt.*,
           u.name AS verified_by
@@ -655,11 +658,20 @@ exports.getOne = async (req, res) => {
       [orderId],
     );
 
-    payments.forEach((p) => {
+    paymentTransactions.forEach((p) => {
       if (p.proof_url) p.proof_url = signUploadPath(p.proof_url);
+      // Real, persisted payment_transactions rows — never synthetic.
+      p.persisted = true;
+      p.is_legacy_synthetic = false;
     });
 
-    if (order.payment_proof && payments.length === 0) {
+    // `payments` is the DISPLAY array (legacy-compatible) — it may also
+    // contain the synthetic initial_* row below. `paymentTransactions`
+    // stays real-rows-only and is the sole source for every financial
+    // total below; the two must never be conflated again.
+    const payments = [...paymentTransactions];
+
+    if (order.payment_proof && paymentTransactions.length === 0) {
       payments.push({
         id: `initial_${order.id}`,
         order_id: order.id,
@@ -670,6 +682,11 @@ exports.getOne = async (req, res) => {
         notes: "Initial order placement proof.",
         created_at: order.created_at,
         verified_by: null,
+        // Never a real transaction — must never be counted toward any
+        // financial total or contract eligibility, only shown for
+        // backward-compatible legacy proof display.
+        persisted: false,
+        is_legacy_synthetic: true,
       });
     }
 
@@ -682,39 +699,16 @@ exports.getOne = async (req, res) => {
       delivery.signed_receipt = signUploadPath(delivery.signed_receipt);
     }
 
-    const [[contract]] = await pool.query(
-      `SELECT * FROM contracts WHERE order_id = ? LIMIT 1`,
-      [orderId],
-    );
-
-    const resolvedBlueprintId =
-      Number(contract?.blueprint_id || order.blueprint_id || 0) || null;
-
-    let latestEstimation = null;
-
-    if (resolvedBlueprintId) {
-      const [[estimation]] = await pool.query(
-        `SELECT
-            id,
-            blueprint_id,
-            version,
-            status,
-            material_cost,
-            labor_cost,
-            tax,
-            discount,
-            grand_total,
-            created_at,
-            updated_at
-        FROM estimations
-        WHERE blueprint_id = ?
-        ORDER BY version DESC, id DESC
-        LIMIT 1`,
-        [resolvedBlueprintId],
-      );
-
-      latestEstimation = estimation || null;
-    }
+    // Resolved through the lifecycle service instead of a raw
+    // blueprint_id-only query. Canonical blueprint id always comes from
+    // order.blueprint_id (never contract.blueprint_id) — note this is a
+    // deliberate behavior change from before: if a contract's blueprint_id
+    // ever diverges from its order's own blueprint_id (e.g. a mismatched
+    // manual entry), the order's own linkage now always wins. `pool` can be
+    // passed directly here since this is a pure read with no locking.
+    const lifecycle = await resolveLifecycleByOrder(pool, { orderId });
+    const contract = lifecycle.contract || null;
+    const latestEstimation = lifecycle.estimation || null;
 
     const [blueprintTasks] = await pool.query(
       `SELECT
@@ -729,13 +723,22 @@ exports.getOne = async (req, res) => {
       [orderId],
     );
 
-    const verifiedPaymentTotal = payments
+    // Financial totals use ONLY real, persisted payment_transactions rows
+    // — never the display-only `payments` array, which may still contain
+    // the synthetic initial_* row. order.payment_status is never treated
+    // as proof of a verified amount here.
+    const verifiedPaymentTotal = paymentTransactions
       .filter((payment) => normalize(payment.status) === "verified")
       .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
 
     const totalAmount = Number(order.total_amount || order.total || 0);
     const paymentBalance = Math.max(0, totalAmount - verifiedPaymentTotal);
 
+    // Pending/rejected checks intentionally still read the DISPLAY array
+    // (payments, including the synthetic row) — this only affects the
+    // informational paymentStatusDisplay label below, never a financial
+    // total, and preserves the existing legacy behavior of showing a
+    // legacy pending proof as pending.
     const hasPendingPayment = payments.some(
       (payment) => normalize(payment.status) === "pending",
     );
@@ -743,12 +746,19 @@ exports.getOne = async (req, res) => {
       (payment) => normalize(payment.status) === "rejected",
     );
 
-    let paymentStatusDisplay = normalize(order.payment_status || "unpaid");
-
-    if (
+    // Legacy order.payment_status is only trusted for cash/COD/COP orders
+    // (where "paid" is set at pickup/delivery time, not via an uploaded
+    // proof). For every other payment method, "paid"/"partial" must be
+    // earned by real, persisted, verified payment_transactions rows —
+    // never inherited from a raw order.payment_status value that could
+    // reflect nothing more than a synthetic legacy proof.
+    const legacyCashMarkedPaid =
       ["cash", "cod", "cop"].includes(normalize(order.payment_method)) &&
-      normalize(order.payment_status) === "paid"
-    ) {
+      normalize(order.payment_status) === "paid";
+
+    let paymentStatusDisplay = "unpaid";
+
+    if (legacyCashMarkedPaid) {
       paymentStatusDisplay = "paid";
     } else if (verifiedPaymentTotal >= totalAmount && totalAmount > 0) {
       paymentStatusDisplay = "paid";
@@ -756,7 +766,7 @@ exports.getOne = async (req, res) => {
       paymentStatusDisplay = "partial";
     } else if (hasPendingPayment) {
       paymentStatusDisplay = "pending";
-    } else if (hasRejectedPayment && paymentStatusDisplay !== "paid") {
+    } else if (hasRejectedPayment) {
       paymentStatusDisplay = "rejected";
     }
 
@@ -777,9 +787,16 @@ exports.getOne = async (req, res) => {
       custom_request_items: customRequestItems,
       has_custom_request_data: customRequestItems.length > 0,
       latest_estimation: latestEstimation,
+      lifecycle_integrity_warning: lifecycle.integrity_warning,
+      lifecycle_integrity_reason: lifecycle.reason,
+      can_create_replacement_estimation:
+        lifecycle.can_create_replacement_estimation,
+      recovery_block_reason: lifecycle.recovery_block_reason,
+      conflicting_order_ids: lifecycle.conflicting_order_ids,
     });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error("[orderController.getOne]", err);
+    res.status(500).json({ message: "Failed to load order details." });
   }
 };
 
@@ -989,79 +1006,106 @@ exports.updateStatus = async (req, res) => {
 
     const requiredBlueprintDownPayment = Number((totalAmount * 0.3).toFixed(2));
 
-    const paymentMarkedPaid = normalize(order.payment_status) === "paid";
+    // orders.payment_status is not trusted here — it can be stale or
+    // inconsistent (that inconsistency is part of the original bug class
+    // this whole fix addresses). Verified payment_transactions rows are
+    // the only source of truth for whether the required down payment has
+    // actually been received.
     const hasRequiredBlueprintDownPayment =
-      paymentMarkedPaid ||
       verifiedPaymentTotal >= Math.max(0, requiredBlueprintDownPayment - 0.01);
 
-    let latestEstimation = null;
+    const isFullyPaid =
+      totalAmount > 0 && verifiedPaymentTotal >= totalAmount - 0.01;
 
-    if (blueprintId) {
-      const [[estimation]] = await conn.query(
-        `SELECT id, status
-         FROM estimations
-         WHERE blueprint_id = ?
-         ORDER BY version DESC, id DESC
-         LIMIT 1`,
-        [blueprintId],
-      );
+    // Resolved through the lifecycle service instead of a raw
+    // blueprint_id-only query. Always uses order.blueprint_id as the
+    // canonical source internally (not the pre-computed `blueprintId`
+    // above, which can also pull from contract.blueprint_id) — matches the
+    // same canonical-source rule used everywhere else in this fix.
+    const lifecycle = isBlueprintOrder
+      ? await resolveLifecycleByOrder(conn, { orderId: parseInt(req.params.id) })
+      : null;
 
-      latestEstimation = estimation || null;
-    }
+    const lifecycleGatedStatuses = [
+      "contract_released",
+      "production",
+      "shipping",
+      "delivered",
+      "completed",
+    ];
 
-    const estimationApproved =
-      normalize(latestEstimation?.status) === "approved";
+    // ── Comprehensive blueprint lifecycle gate ──────────────────────────
+    // Re-checked fresh on EVERY advancing transition, never assuming an
+    // earlier stage already verified this — a historically corrupted
+    // order may already be sitting in an advanced status (contract_
+    // released, production, even completed) with a broken lifecycle
+    // underneath it, so every transition attempt re-validates everything
+    // from scratch rather than trusting the state machine alone.
+    if (isBlueprintOrder && lifecycleGatedStatuses.includes(nextStatus)) {
+      const failures = [];
 
-    if (
-      isBlueprintOrder &&
-      ["contract_released", "production"].includes(nextStatus)
-    ) {
-      if (!blueprintId) {
-        await conn.rollback();
-        return res.status(400).json({
-          message: "Blueprint order must be linked to a blueprint first.",
-        });
+      if (!lifecycle || lifecycle.status !== "OK") {
+        failures.push(
+          lifecycle?.message ||
+            "This blueprint order's lifecycle is blocked, unresolved, or missing required records.",
+        );
       }
 
-      if (totalAmount <= 0) {
-        await conn.rollback();
-        return res.status(400).json({
-          message:
-            "Blueprint order total must be finalized first before contract release or production.",
-        });
+      const bp = lifecycle?.blueprint || null;
+      const est = lifecycle?.estimation || null;
+
+      if (!bp) {
+        failures.push("Blueprint order must be linked to a real blueprint.");
       }
 
-      if (!latestEstimation) {
-        await conn.rollback();
-        return res.status(400).json({
-          message:
-            "Blueprint order needs a saved estimation before contract release or production.",
-        });
+      if (!est) {
+        failures.push(
+          "Blueprint order needs a saved, lifecycle-valid estimation.",
+        );
+      } else {
+        if (normalize(est.status) !== "approved") {
+          failures.push("Blueprint order must have an approved estimation.");
+        }
+        if (!(Number(est.grand_total || 0) > 0)) {
+          failures.push(
+            "The approved estimation total must be greater than zero.",
+          );
+        }
+        if (!(totalAmount > 0)) {
+          failures.push(
+            "Blueprint order total must be finalized before this transition.",
+          );
+        }
+        if (Math.abs(totalAmount - Number(est.grand_total || 0)) > 0.01) {
+          failures.push(
+            "Order total does not match the approved estimation total. Refresh and re-save the estimation before continuing.",
+          );
+        }
       }
 
-      if (!estimationApproved) {
-        await conn.rollback();
-        return res.status(400).json({
-          message:
-            "Blueprint order must have an approved estimation before contract release or production.",
-        });
-      }
-
-      if (!hasRequiredBlueprintDownPayment) {
-        await conn.rollback();
-        return res.status(400).json({
-          message:
-            "Blueprint orders require at least a 30% verified down payment before contract release or production.",
-        });
-      }
-    }
-
-    if (isBlueprintOrder && nextStatus === "contract_released") {
       if (!order.contract_id) {
+        failures.push("A contract must exist for this order.");
+      }
+
+      if (nextStatus === "completed") {
+        if (!isFullyPaid) {
+          failures.push(
+            "Order cannot be completed until the remaining balance is fully paid.",
+          );
+        }
+      } else if (!hasRequiredBlueprintDownPayment) {
+        failures.push(
+          "Blueprint orders require at least a 30% verified down payment.",
+        );
+      }
+
+      if (failures.length) {
         await conn.rollback();
         return res.status(400).json({
-          message:
-            "Generate the contract first before releasing this blueprint order.",
+          message: failures[0],
+          failures,
+          integrity_reason: lifecycle?.reason || null,
+          conflicting_order_ids: lifecycle?.conflicting_order_ids || null,
         });
       }
     }
@@ -1072,14 +1116,6 @@ exports.updateStatus = async (req, res) => {
         return res.status(400).json({
           message:
             "Blueprint/custom orders cannot go straight to production. Release the contract first.",
-        });
-      }
-
-      if (!order.contract_id) {
-        await conn.rollback();
-        return res.status(400).json({
-          message:
-            "Blueprint order must have a generated contract before moving to production.",
         });
       }
     }
@@ -1147,7 +1183,10 @@ exports.updateStatus = async (req, res) => {
       });
     }
 
-    if (nextStatus === "completed" && paymentBalance > 0) {
+    // Standard/walk-in orders keep their original, unconditional
+    // full-payment-before-completed rule — untouched by the blueprint-
+    // specific gate above, which only runs for isBlueprintOrder.
+    if (!isBlueprintOrder && nextStatus === "completed" && paymentBalance > 0) {
       await conn.rollback();
       return res.status(400).json({
         message:
@@ -1249,39 +1288,306 @@ exports.decline = async (req, res) => {
 };
 
 exports.verifyPayment = async (req, res) => {
-  const conn = await pool.getConnection();
+  // Strict, local (function-scoped) positive-integer validator — kept
+  // inline rather than as a new top-level helper so this entire change
+  // stays contained within verifyPayment's own body.
+  const isStrictPositiveIntString = (value) => {
+    const text = String(value ?? "").trim();
+    if (!/^[1-9][0-9]*$/.test(text)) return false;
+    const parsed = Number(text);
+    return Number.isSafeInteger(parsed) && parsed > 0;
+  };
+
+  const orderId = isStrictPositiveIntString(req.params.id)
+    ? Number(req.params.id)
+    : null;
+
+  if (!orderId) {
+    return res.status(400).json({ message: "Invalid order id." });
+  }
+
+  const { payment_id, action } = req.body;
+  const normalizedAction = normalize(action);
+
+  if (!["verified", "rejected"].includes(normalizedAction)) {
+    return res.status(400).json({ message: "Invalid payment action." });
+  }
+
+  // payment_id must be exactly one of two structurally valid forms: a
+  // strict positive-integer string (a real payment_transactions id), or
+  // exactly "initial_<orderId>" matching the already-validated route
+  // order id (the legacy synthetic display row). Anything else — a
+  // decimal, scientific notation, a mismatched embedded id, trailing
+  // garbage like "initial_35_extra" — is rejected outright.
+  const paymentIdStr = String(payment_id ?? "").trim();
+  const isSyntheticConversion = paymentIdStr === `initial_${orderId}`;
+  const realPaymentId = isStrictPositiveIntString(paymentIdStr)
+    ? Number(paymentIdStr)
+    : null;
+
+  if (!isSyntheticConversion && realPaymentId === null) {
+    return res.status(400).json({ message: "Invalid payment id." });
+  }
+
+  let conn = null;
+  let transactionActive = false;
+  let connectionReusable = true;
 
   try {
-    const { payment_id, action } = req.body;
-    const normalizedAction = normalize(action);
+    conn = await pool.getConnection();
+    await conn.beginTransaction();
+    transactionActive = true;
 
-    if (!["verified", "rejected"].includes(normalizedAction)) {
-      return res.status(400).json({ message: "Invalid payment action." });
+    // ── Lock the canonical order FIRST — before lifecycle resolution,
+    // before payment-transaction locking, before any write. Matches the
+    // project-wide order-first lock discipline.
+    const [[order]] = await conn.query(
+      `SELECT
+          id,
+          order_type,
+          status,
+          total,
+          blueprint_id,
+          payment_method,
+          payment_proof
+       FROM orders
+       WHERE id = ?
+       LIMIT 1
+       FOR UPDATE`,
+      [orderId],
+    );
+
+    if (!order) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(404).json({ message: "Order not found." });
     }
 
-    await conn.beginTransaction();
+    const isBlueprintOrder = normalize(order.order_type) === "blueprint";
 
-    // 👉 THE FIX: We intercept the "initial_" ID here so it doesn't run parseInt() and cause a NaN error!
-    if (String(payment_id).startsWith("initial_")) {
-      const orderId = parseInt(req.params.id);
-      const [[order]] = await conn.query(
-        `SELECT total, payment_method, payment_proof FROM orders WHERE id = ? LIMIT 1`,
-        [orderId],
+    // ── Blueprint verification lifecycle gate — action=verified only.
+    // Rejection stays exempt from every check in this block, so an
+    // unsafe pending proof can always be closed out without advancing
+    // financial state, regardless of order status or lifecycle health.
+    let lifecycle = null;
+    let approvedMaximumTotal = Number(order.total || 0);
+
+    if (normalizedAction === "verified" && isBlueprintOrder) {
+      lifecycle = await resolveLifecycleByOrder(conn, {
+        orderId,
+        lockOrder: true,
+        lockBlueprint: true,
+      });
+
+      const est = lifecycle.estimation;
+      const bp = lifecycle.blueprint;
+      const ord = lifecycle.order;
+
+      const canonicalMatchesLocked =
+        Boolean(ord) && Number(ord.id) === Number(order.id);
+
+      const currentOrderStatus = normalize(order.status);
+      const ALLOWED_VERIFY_STATUSES = [
+        "confirmed",
+        "contract_released",
+        "production",
+        "shipping",
+        "delivered",
+      ];
+      const statusAllowed = ALLOWED_VERIFY_STATUSES.includes(
+        currentOrderStatus,
       );
 
-      if (!order) {
+      const blueprintArchived =
+        Number(bp?.is_deleted) === 1 || normalize(bp?.stage) === "archived";
+
+      const estimationApproved = normalize(est?.status) === "approved";
+      const estimationTotalPositive =
+        Number.isFinite(Number(est?.grand_total)) &&
+        Number(est?.grand_total) > 0;
+      const orderTotalPositive =
+        Number.isFinite(Number(order.total)) && Number(order.total) > 0;
+      const totalsMatch =
+        !!est &&
+        Math.abs(Number(order.total || 0) - Number(est.grand_total || 0)) <=
+          0.01;
+
+      const hasContract = Boolean(lifecycle.contract);
+
+      // A confirmed order must NOT already have a contract; every later
+      // stage must already have a real one. Never auto-repaired or
+      // relinked here — a mismatch simply blocks verification.
+      const contractConsistent =
+        currentOrderStatus === "confirmed" ? !hasContract : hasContract;
+
+      const lifecycleUnsafe =
+        lifecycle.status !== "OK" ||
+        !ord ||
+        !bp ||
+        !est ||
+        !canonicalMatchesLocked ||
+        blueprintArchived ||
+        !estimationApproved ||
+        !estimationTotalPositive ||
+        !orderTotalPositive ||
+        !totalsMatch ||
+        !statusAllowed ||
+        !contractConsistent;
+
+      if (lifecycleUnsafe) {
         await conn.rollback();
-        return res.status(404).json({ message: "Order not found." });
+        transactionActive = false;
+        return res.status(409).json({
+          message:
+            lifecycle.message ||
+            "This order's blueprint lifecycle or status is not in a verifiable state, so this payment cannot be verified until it is manually reviewed.",
+          integrity_reason: lifecycle.reason,
+          conflicting_order_ids: lifecycle.conflicting_order_ids,
+        });
       }
 
-      // Convert the initial order proof into a REAL payment transaction record
+      approvedMaximumTotal = Number(est.grand_total || 0);
+    }
+
+    // ── Lock the COMPLETE real payment_transactions set for this order
+    // — never just the single target row. This is what lets two admins
+    // reviewing two different pending transactions on the same order
+    // serialize correctly instead of each computing a stale rollup.
+    const [paymentSet] = await conn.query(
+      `SELECT
+          id,
+          order_id,
+          status,
+          amount,
+          payment_method,
+          proof_url
+       FROM payment_transactions
+       WHERE order_id = ?
+       ORDER BY id
+       FOR UPDATE`,
+      [orderId],
+    );
+
+    let targetAmount = null;
+    let realTargetId = null;
+
+    if (isSyntheticConversion) {
+      // Legacy initial_<orderId> conversion — allowed only when every
+      // structural condition holds, regardless of verify vs reject.
+      if (!order.payment_proof) {
+        await conn.rollback();
+        transactionActive = false;
+        return res
+          .status(400)
+          .json({ message: "No legacy payment proof exists for this order." });
+      }
+
+      const legacyMethodValid = [
+        "cash",
+        "gcash",
+        "bank_transfer",
+        "cod",
+        "cop",
+        "paymongo",
+      ].includes(normalize(order.payment_method));
+
+      if (!legacyMethodValid) {
+        await conn.rollback();
+        transactionActive = false;
+        return res.status(400).json({
+          message: "Order payment method is invalid for a legacy conversion.",
+        });
+      }
+
+      // The zero-real-transactions requirement preserves the exact
+      // getOne behavior that only ever creates the synthetic row when no
+      // real transaction exists — if one now exists, the synthetic row
+      // is stale and must never be converted into a second, duplicate
+      // legacy transaction.
+      if (paymentSet.length > 0) {
+        await conn.rollback();
+        transactionActive = false;
+        return res.status(409).json({
+          message:
+            "A real payment transaction already exists for this order; the legacy proof can no longer be converted directly.",
+          integrity_reason: "PAYMENT_STATE_CHANGED",
+        });
+      }
+
+      // Server-derived synthetic amount — always the locked order total,
+      // never a client-supplied value — still subject to every
+      // verification-time amount/overpayment gate below.
+      targetAmount = Number(order.total || 0);
+    } else {
+      const target = paymentSet.find(
+        (row) => Number(row.id) === Number(realPaymentId),
+      );
+
+      if (!target) {
+        await conn.rollback();
+        transactionActive = false;
+        return res.status(404).json({ message: "Payment record not found." });
+      }
+
+      if (normalize(target.status) !== "pending") {
+        await conn.rollback();
+        transactionActive = false;
+        return res.status(409).json({
+          message:
+            "This payment was already reviewed. Please refresh and try again.",
+          integrity_reason: "PAYMENT_STATE_CHANGED",
+        });
+      }
+
+      targetAmount = Number(target.amount || 0);
+      realTargetId = target.id;
+    }
+
+    // ── Verify-time overpayment gate — action=verified only. Never
+    // trusts orders.payment_status, the synthetic display row, or any
+    // client-supplied total/balance — only the locked, real, persisted
+    // transaction set computed just above.
+    if (normalizedAction === "verified") {
+      if (!(targetAmount > 0)) {
+        await conn.rollback();
+        transactionActive = false;
+        return res.status(400).json({ message: "Payment amount is invalid." });
+      }
+
+      if (!(approvedMaximumTotal > 0)) {
+        await conn.rollback();
+        transactionActive = false;
+        return res.status(400).json({
+          message: "Order total is invalid; this payment cannot be verified.",
+        });
+      }
+
+      const verifiedTotalBefore = paymentSet
+        .filter((row) => normalize(row.status) === "verified")
+        .reduce((sum, row) => sum + Number(row.amount || 0), 0);
+
+      if (verifiedTotalBefore + targetAmount > approvedMaximumTotal + 0.01) {
+        await conn.rollback();
+        transactionActive = false;
+        return res.status(409).json({
+          message: "Verifying this payment would exceed the order total.",
+          integrity_reason: "PAYMENT_OVERPAYMENT",
+        });
+      }
+    }
+
+    // ── Guarded write ────────────────────────────────────────────────
+    if (isSyntheticConversion) {
+      // Insert exactly one real transaction, using only canonical locked
+      // order values — never client-controlled amount, method, proof
+      // URL, or order id.
       await conn.query(
         `INSERT INTO payment_transactions
           (order_id, amount, payment_method, proof_url, verified_by, verified_at, status, notes)
          VALUES (?, ?, ?, ?, ?, NOW(), ?, ?)`,
         [
-          orderId,
-          order.total,
+          order.id,
+          targetAmount,
           order.payment_method,
           order.payment_proof,
           req.user.id,
@@ -1290,61 +1596,39 @@ exports.verifyPayment = async (req, res) => {
         ],
       );
     } else {
-      // Normal payment transaction flow for later payments
-      const [[payment]] = await conn.query(
-        `SELECT id, status, amount
-         FROM payment_transactions
-         WHERE id = ? AND order_id = ?
-         LIMIT 1`,
-        [parseInt(payment_id), parseInt(req.params.id)],
-      );
-
-      if (!payment) {
-        await conn.rollback();
-        return res.status(404).json({ message: "Payment record not found." });
-      }
-
-      if (normalize(payment.status) !== "pending") {
-        await conn.rollback();
-        return res
-          .status(400)
-          .json({ message: "Only pending payments can be reviewed." });
-      }
-
-      await conn.query(
+      const [updateResult] = await conn.query(
         `UPDATE payment_transactions
          SET status = ?, verified_by = ?, verified_at = NOW()
-         WHERE id = ? AND order_id = ?`,
-        [
-          normalizedAction,
-          req.user.id,
-          parseInt(payment_id),
-          parseInt(req.params.id),
-        ],
+         WHERE id = ? AND order_id = ? AND status = 'pending'`,
+        [normalizedAction, req.user.id, realTargetId, order.id],
       );
+
+      if (updateResult.affectedRows === 0) {
+        await conn.rollback();
+        transactionActive = false;
+        return res.status(409).json({
+          message:
+            "This payment was already reviewed. Please refresh and try again.",
+          integrity_reason: "PAYMENT_STATE_CHANGED",
+        });
+      }
     }
 
-    // Recalculate order payment status based on all transactions
-    const [[order]] = await conn.query(
-      `SELECT total, payment_method
-       FROM orders
-       WHERE id = ?
-       LIMIT 1`,
-      [parseInt(req.params.id)],
-    );
-
-    const [[summary]] = await conn.query(
+    // ── Recompute order payment status from real, persisted rows only —
+    // a fresh query, never the pre-write locked set, so it reflects the
+    // write that just happened.
+    const [[freshSummary]] = await conn.query(
       `SELECT
          COALESCE(SUM(CASE WHEN LOWER(status) = 'verified' THEN amount ELSE 0 END), 0) AS verified_total,
          MAX(CASE WHEN LOWER(status) = 'pending' THEN 1 ELSE 0 END) AS has_pending,
          MAX(CASE WHEN LOWER(status) = 'rejected' THEN 1 ELSE 0 END) AS has_rejected
        FROM payment_transactions
        WHERE order_id = ?`,
-      [parseInt(req.params.id)],
+      [order.id],
     );
 
-    const totalAmount = Number(order?.total || 0);
-    const verifiedTotal = Number(summary?.verified_total || 0);
+    const totalAmount = Number(order.total || 0);
+    const verifiedTotal = Number(freshSummary?.verified_total || 0);
 
     let nextPaymentStatus = "unpaid";
 
@@ -1352,9 +1636,9 @@ exports.verifyPayment = async (req, res) => {
       nextPaymentStatus = "paid";
     } else if (verifiedTotal > 0) {
       nextPaymentStatus = "partial";
-    } else if (Number(summary?.has_pending)) {
+    } else if (Number(freshSummary?.has_pending)) {
       nextPaymentStatus = "pending";
-    } else if (Number(summary?.has_rejected)) {
+    } else if (Number(freshSummary?.has_rejected)) {
       nextPaymentStatus = "rejected";
     }
 
@@ -1362,24 +1646,48 @@ exports.verifyPayment = async (req, res) => {
       `UPDATE orders
        SET payment_status = ?
        WHERE id = ?`,
-      [nextPaymentStatus, parseInt(req.params.id)],
+      [nextPaymentStatus, order.id],
     );
 
     await conn.commit();
+    transactionActive = false;
 
     req.auditRecord = {
-      id: parseInt(req.params.id),
-      new: { payment_id, action: normalizedAction, payment_status: nextPaymentStatus },
+      id: order.id,
+      new: {
+        payment_id,
+        action: normalizedAction,
+        payment_status: nextPaymentStatus,
+      },
     };
-    res.json({
+
+    return res.json({
       message: `Payment ${normalizedAction}.`,
       payment_status: nextPaymentStatus,
     });
   } catch (err) {
-    await conn.rollback();
-    res.status(500).json({ message: err.message });
+    if (conn && transactionActive) {
+      try {
+        await conn.rollback();
+        transactionActive = false;
+      } catch (rollbackErr) {
+        console.error(
+          "[orderController.verifyPayment] rollback failed:",
+          rollbackErr.message || rollbackErr,
+        );
+        connectionReusable = false;
+      }
+    }
+    console.error("[orderController.verifyPayment]", err);
+    return res.status(500).json({ message: "Failed to review payment." });
   } finally {
-    conn.release();
+    if (conn) {
+      if (connectionReusable) {
+        conn.release();
+      } else {
+        conn.destroy();
+      }
+    }
   }
 };
 

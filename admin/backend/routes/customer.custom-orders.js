@@ -158,6 +158,14 @@ router.post(
 );
 
 router.post(
+  "/:id/remaining-balance",
+  authenticate,
+  requireCustomer,
+  proofUpload,
+  customOrderController.submitRemainingBalancePayment,
+);
+
+router.post(
   "/:id/messages",
   authenticate,
   requireCustomer,

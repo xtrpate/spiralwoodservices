@@ -2052,8 +2052,8 @@ export default function OrderDetailPage() {
             {hasPendingPaymentActions && (
               <div style={{ marginTop: 14 }}>
                 <div style={infoNotice}>
-                  A rider-submitted delivery payment is waiting for admin
-                  verification in the payment transactions table above.
+                  A payment proof is waiting for admin verification in the
+                  payment transactions table above.
                 </div>
               </div>
             )}

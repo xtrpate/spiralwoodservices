@@ -2,6 +2,9 @@
 // Fixed: warranties join, contracts columns, backup_logs columns, orders.type/total
 const pool = require("../../config/db");
 const bcrypt = require("bcryptjs");
+const {
+  resolveLifecycleByOrder,
+} = require("../../services/blueprintLifecycleService");
 
 // ══ WARRANTY ══════════════════════════════════════════════════════════════════
 exports.getAll = async (req, res) => {
@@ -106,52 +109,327 @@ exports.getContracts = async (req, res) => {
   }
 };
 
+// Small local normalization helper, scoped to this file only — matches the
+// same pattern already used in orderController.js/blueprintController.js.
+const normalize = (value) => String(value || "").trim().toLowerCase();
+
 exports.generateContract = async (req, res) => {
+  // ── Strict order_id validation — reuses the same strict positive-int
+  // parser already defined lower in this file for audit-log filtering
+  // (accessible here via normal JS module scoping: this function's BODY
+  // only runs once a request arrives, by which point the whole module,
+  // including that later `const`, has already finished loading).
+  const orderId = parsePositiveInt(req.body?.order_id);
+
+  if (orderId === null) {
+    return res
+      .status(400)
+      .json({ message: "order_id must be a positive integer." });
+  }
+
+  const requestedBlueprintId = req.body?.blueprint_id;
+  const { terms, warranty_terms } = req.body || {};
+
+  let conn = null;
+  let transactionActive = false;
+  let connectionReusable = true;
+
   try {
-    const { order_id, blueprint_id, terms, warranty_terms } = req.body;
+    conn = await pool.getConnection();
+    await conn.beginTransaction();
+    transactionActive = true;
 
-    // Get customer info from the order
-    // ── FIXED: Parsed ID ──
-    const [[order]] = await pool.query(
-      `SELECT o.customer_id, COALESCE(u.name, o.walkin_customer_name) AS customer_name
-       FROM orders o LEFT JOIN users u ON u.id = o.customer_id WHERE o.id = ?`,
-      [parseInt(order_id)],
+    // Canonical resolution — order-first locking via lockOrder, blueprint
+    // locked in the same call via lockBlueprint. The canonical blueprint
+    // always comes from order.blueprint_id inside the resolver;
+    // requestedBlueprintId (from req.body) is only ever used there as an
+    // optional consistency check — never as the query/write source.
+    const lifecycle = await resolveLifecycleByOrder(conn, {
+      orderId,
+      requestedBlueprintId,
+      lockOrder: true,
+      lockBlueprint: true,
+    });
+
+    if (!lifecycle.order) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(404).json({ message: "Order not found." });
+    }
+
+    // ── Gate A: canonical records ─────────────────────────────────────
+    if (
+      lifecycle.status !== "OK" ||
+      !lifecycle.blueprint ||
+      !lifecycle.estimation
+    ) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(409).json({
+        message:
+          lifecycle.message ||
+          "This order's blueprint lifecycle is not fully resolved (blocked, missing blueprint, or missing a lifecycle-valid estimation), so a contract cannot be generated.",
+        integrity_reason: lifecycle.reason,
+        conflicting_order_ids: lifecycle.conflicting_order_ids,
+      });
+    }
+
+    const order = lifecycle.order;
+    const blueprint = lifecycle.blueprint;
+    const estimation = lifecycle.estimation;
+
+    // ── Archived-blueprint guard — checked immediately after canonical
+    // resolution, before any further gate. An archived blueprint must
+    // never be restored or modified automatically here; this only
+    // blocks contract generation against it.
+    if (
+      Number(blueprint.is_deleted) === 1 ||
+      normalize(blueprint.stage) === "archived"
+    ) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(409).json({
+        message: "Cannot generate a contract for an archived blueprint.",
+        integrity_reason: "BLUEPRINT_ARCHIVED",
+      });
+    }
+
+    // ── Gate B: order state ───────────────────────────────────────────
+    if (normalize(order.order_type) !== "blueprint") {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message: "Contracts can only be generated for blueprint orders.",
+      });
+    }
+
+    if (normalize(order.status) !== "confirmed") {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message: `Order must be exactly "confirmed" to generate a contract (current status: "${order.status}").`,
+      });
+    }
+
+    // Structurally guaranteed by the resolver's own canonical-source rule
+    // (blueprint is always derived from order.blueprint_id), kept here as
+    // an explicit, cheap final assertion rather than an implicit trust.
+    if (Number(order.blueprint_id) !== Number(blueprint.id)) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(409).json({
+        message:
+          "Order's blueprint linkage does not match the resolved canonical blueprint.",
+        integrity_reason: "ORDER_BLUEPRINT_MISMATCH",
+      });
+    }
+
+    if (!order.customer_id) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message:
+          "Order has no linked customer account; a contract requires a registered customer.",
+      });
+    }
+
+    // ── Gate C: estimation ────────────────────────────────────────────
+    if (normalize(estimation.status) !== "approved") {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message: "Estimation must be approved before generating a contract.",
+      });
+    }
+
+    const estimationGrandTotal = Number(estimation.grand_total || 0);
+
+    if (!(estimationGrandTotal > 0)) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message: "The approved estimation total must be greater than zero.",
+      });
+    }
+
+    // ── Gate D: order financial values (orders.payment_status is never
+    // trusted anywhere in this function — only payment_transactions rows
+    // aggregated by the resolver are used as payment proof) ────────────
+    const orderTotal = Number(order.total || 0);
+
+    if (!(orderTotal > 0)) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message: "Order total must be finalized before generating a contract.",
+      });
+    }
+
+    if (Math.abs(orderTotal - estimationGrandTotal) > 0.01) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message:
+          "Order total does not match the approved estimation total. Refresh and re-save the estimation before continuing.",
+      });
+    }
+
+    // ── Gate E: verified payment — payment_transactions only ─────────
+    const requiredDownPayment = Number((estimationGrandTotal * 0.3).toFixed(2));
+    const verifiedPaymentTotal = Number(lifecycle.verified_payment_total || 0);
+
+    if (verifiedPaymentTotal < requiredDownPayment - 0.01) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message: `Blueprint orders require at least a 30% verified down payment before a contract can be generated (required ${requiredDownPayment}, verified ${verifiedPaymentTotal}).`,
+      });
+    }
+
+    // ── Gate F: duplicate prevention ──────────────────────────────────
+    // Checked twice: once from the resolver's own contract lookup, and
+    // again directly here as a final re-check on the now-locked order —
+    // the lock acquired above via resolveLifecycleByOrder's lockOrder
+    // means a concurrent double-click request serializes behind this
+    // one rather than racing it.
+    if (lifecycle.contract) {
+      await conn.rollback();
+      transactionActive = false;
+      return res
+        .status(409)
+        .json({ message: "A contract already exists for this order." });
+    }
+
+    const [[existingContract]] = await conn.query(
+      `SELECT id FROM contracts WHERE order_id = ? LIMIT 1`,
+      [order.id],
     );
-    if (!order) return res.status(404).json({ message: "Order not found." });
 
-    // ── FIXED: Parsed IDs ──
-    const [r] = await pool.query(
-      // contracts schema: blueprint_id, order_id, customer_id, customer_name, warranty_terms, authorized_by
-      // store contract terms in warranty_terms field + materials_used field
+    if (existingContract) {
+      await conn.rollback();
+      transactionActive = false;
+      return res
+        .status(409)
+        .json({ message: "A contract already exists for this order." });
+    }
+
+    // ── Server-derived customer name. The request body has never
+    // contained a customer_name field in this function (confirmed by
+    // inspection — only order_id, blueprint_id, terms, warranty_terms
+    // were ever destructured here), so this was already safe; kept
+    // explicit and re-derived from the canonical order/customer record
+    // rather than assumed from anywhere else.
+    const [[customerRow]] = await conn.query(
+      `SELECT COALESCE(u.name, o.walkin_customer_name) AS customer_name
+       FROM orders o
+       LEFT JOIN users u ON u.id = o.customer_id
+       WHERE o.id = ?
+       LIMIT 1`,
+      [order.id],
+    );
+    const customerName = customerRow?.customer_name || null;
+
+    if (!customerName) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message:
+          "Could not resolve a customer name for this order; contract cannot be generated.",
+      });
+    }
+
+    // ── Insert using ONLY canonical/server-derived values. terms and
+    // warranty_terms remain client-supplied free-text content fields
+    // (contract prose, not identity/financial data) — same as the
+    // existing, unbroadened behavior. Dates, processing_fee_pct, and
+    // is_non_refundable are left untouched, exactly as before (the
+    // schema default applies to the two not explicitly set here). ─────
+    const [insertResult] = await conn.query(
       `INSERT INTO contracts
-         (order_id, blueprint_id, customer_id, customer_name, warranty_terms, materials_used, authorized_by, start_date)
-       VALUES (?, ?, ?, ?, ?, ?, ?, CURDATE())`,
+         (order_id, blueprint_id, customer_id, customer_name, warranty_terms, materials_used, authorized_by, down_payment, start_date)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURDATE())`,
       [
-        parseInt(order_id),
-        blueprint_id ? parseInt(blueprint_id) : null,
+        order.id,
+        blueprint.id,
         order.customer_id,
-        order.customer_name,
-        warranty_terms,
-        terms,
+        customerName,
+        warranty_terms || null,
+        terms || null,
         req.user.id,
+        requiredDownPayment,
       ],
     );
 
-    // Update order status
-    // ── FIXED: Parsed ID ──
-    await pool.query(
+    // ── Guarded order UPDATE — the ONE canonical locked order only,
+    // never a blanket blueprint_id match. affectedRows is checked so the
+    // contract just inserted can never be left without its matching
+    // order transition if the locked row's state somehow no longer
+    // matches by the time this runs. ──────────────────────────────────
+    const [orderUpdateResult] = await conn.query(
       `UPDATE orders
-      SET status = CASE
-        WHEN status IN ('pending', 'confirmed') THEN 'contract_released'
-        ELSE status
-      END
-      WHERE id = ?`,
-      [parseInt(order_id)],
+       SET status = 'contract_released'
+       WHERE id = ?
+         AND order_type = 'blueprint'
+         AND status = 'confirmed'`,
+      [order.id],
     );
 
-    res.status(201).json({ message: "Contract generated.", id: r.insertId });
+    if (orderUpdateResult.affectedRows === 0) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(409).json({
+        message:
+          "Order status changed before the contract could be finalized. Please refresh and try again.",
+        integrity_reason: "ORDER_STATE_CHANGED",
+      });
+    }
+
+    // Contract insert and order-status update are the atomic core — both
+    // succeed or both roll back together. No notification, audit, or PDF
+    // side effect happens before this commit.
+    await conn.commit();
+    transactionActive = false;
+
+    res
+      .status(201)
+      .json({ message: "Contract generated.", id: insertResult.insertId });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    // conn may be null here if pool.getConnection() itself failed — no
+    // rollback is attempted in that case, since there is nothing to roll
+    // back.
+    if (conn && transactionActive) {
+      try {
+        await conn.rollback();
+        transactionActive = false;
+      } catch (rollbackErr) {
+        // Rollback itself failing means the transaction/connection state
+        // is now uncertain — logged server-side only, never surfaced to
+        // the client. The connection must not be returned to the pool in
+        // this state (see the finally block below).
+        console.error(
+          "generateContract rollback failed:",
+          rollbackErr.message || rollbackErr,
+        );
+        connectionReusable = false;
+      }
+    }
+    console.error("generateContract error:", err);
+    // err.message is intentionally never sent to the client — could be a
+    // raw SQL error, connection failure detail, or similar internal detail.
+    res.status(500).json({ message: "Failed to generate contract." });
+  } finally {
+    if (conn) {
+      if (connectionReusable) {
+        conn.release();
+      } else {
+        // Rollback failed — this connection's transaction/session state
+        // is no longer trustworthy. Destroy it instead of releasing it
+        // back to the pool, so a later, unrelated request can never pick
+        // up a connection that might still be mid-transaction or holding
+        // stale session state.
+        conn.destroy();
+      }
+    }
   }
 };
 

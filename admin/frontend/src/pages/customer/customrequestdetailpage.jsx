@@ -340,10 +340,10 @@ export default function CustomRequestDetailPage() {
   const [error, setError] = useState("");
   const [previewItem, setPreviewItem] = useState(null);
   const [decisionLoading, setDecisionLoading] = useState("");
-  const [downPaymentMethod, setDownPaymentMethod] = useState("gcash");
-  const [downPaymentAmount, setDownPaymentAmount] = useState("");
-  const [downPaymentFile, setDownPaymentFile] = useState(null);
-  const [downPaymentSubmitting, setDownPaymentSubmitting] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState("gcash");
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentFile, setPaymentFile] = useState(null);
+  const [paymentSubmitting, setPaymentSubmitting] = useState(false);
 
   const [discussionMessage, setDiscussionMessage] = useState("");
   const [discussionFiles, setDiscussionFiles] = useState([]);
@@ -396,6 +396,22 @@ export default function CustomRequestDetailPage() {
 
   const latestEstimation = requestData?.latest_estimation || null;
 
+  // Backend quotation-state fields — source of truth for whether a
+  // quotation is safe to display/act on. Never inferred from
+  // latestEstimation.status alone, since a lifecycle-blocked order
+  // always has latest_estimation = null from the backend regardless of
+  // what a stale record's own status field might have said.
+  const quotationAvailable = Boolean(requestData?.quotation_available);
+  const quotationActionBlocked = Boolean(requestData?.quotation_action_blocked);
+  const quotationIntegrityWarning = Boolean(
+    requestData?.quotation_integrity_warning,
+  );
+  const quotationMessage = requestData?.quotation_message || null;
+
+  const orderStatusKey = String(requestData?.status || "")
+    .trim()
+    .toLowerCase();
+
   const estimationMeta = useMemo(() => {
     const statusKey = String(latestEstimation?.status || "")
       .trim()
@@ -410,64 +426,116 @@ export default function CustomRequestDetailPage() {
     );
   }, [latestEstimation]);
 
+  // payment_summary is always an object (never null) so every downstream
+  // read below can use plain dot access without repeating `?.` — the
+  // backend already sends `{}`-shaped defaults when there's nothing to
+  // report.
+  const paymentSummary = requestData?.payment_summary || {};
+
+  // Lifecycle-safe fallback chain — order.total is NEVER used here. When
+  // the backend deliberately blocks/hides a quotation it returns
+  // quoted_total: 0, and 0 is the correct, meaningful value to show in
+  // that case (not a stale order.total that could itself be corrupted).
   const quotedTotal = Number(
-    latestEstimation?.grand_total || requestData?.total || 0,
+    paymentSummary.quoted_total ?? latestEstimation?.grand_total ?? 0,
   );
 
-  const paymentSummary = requestData?.payment_summary || null;
-  const downPaymentDue = Number(
-    paymentSummary?.down_payment_due ||
-      requestData?.down_payment ||
-      (quotedTotal > 0 ? quotedTotal * 0.3 : 0),
+  // Every payment-summary value and action below comes from the backend's
+  // lifecycle-safe response. The write endpoints still revalidate all
+  // ownership, lifecycle, stage, payment, and amount rules under lock.
+  const downPaymentDue = Number(paymentSummary.down_payment_due ?? 0);
+  const balanceDue = Number(paymentSummary.balance_due ?? 0);
+  const verifiedPaymentTotal = Number(paymentSummary.total_verified ?? 0);
+  const pendingPaymentTotal = Number(paymentSummary.total_pending ?? 0);
+  const latestPayment = paymentSummary.latest_transaction || null;
+  const canSubmitInitialDownPayment = Boolean(
+    paymentSummary.can_submit_initial_down_payment,
   );
-
-  const latestPayment = paymentSummary?.latest_transaction || null;
-  const hasPendingDownPayment =
-    String(latestPayment?.status || "").trim().toLowerCase() === "pending";
-
-  const hasVerifiedDownPayment = Boolean(
-    paymentSummary?.has_verified_down_payment,
+  const canSubmitRemainingBalance = Boolean(
+    paymentSummary.can_submit_remaining_balance,
   );
+  const paymentStage = String(paymentSummary.payment_stage || "unavailable")
+    .trim()
+    .toLowerCase();
+  const paymentActionMessage =
+    String(paymentSummary.payment_action_message || "").trim() ||
+    "Please contact support if you need assistance with payment.";
 
-  const verifiedDownPaymentTotal = Number(paymentSummary?.total_verified || 0);
-  const pendingDownPaymentTotal = Number(paymentSummary?.total_pending || 0);
-  const remainingVerifiedBalance = Math.max(
-    downPaymentDue - verifiedDownPaymentTotal,
+  // Exactly one backend action flag must be true before a proof form can
+  // appear. This prevents the frontend from guessing authorization from
+  // order.status, order.payment_status, or synthetic payment rows.
+  let paymentSubmissionKind = null;
+
+  if (
+    paymentStage === "initial" &&
+    canSubmitInitialDownPayment &&
+    !canSubmitRemainingBalance
+  ) {
+    paymentSubmissionKind = "initial";
+  } else if (
+    paymentStage === "remaining_balance" &&
+    canSubmitRemainingBalance &&
+    !canSubmitInitialDownPayment
+  ) {
+    paymentSubmissionKind = "remaining_balance";
+  }
+
+  let paymentActionTone = "muted";
+
+  if (paymentStage === "pending_review") {
+    paymentActionTone = "pending";
+  } else if (
+    paymentStage === "fully_paid" ||
+    paymentStage === "awaiting_contract"
+  ) {
+    paymentActionTone = "success";
+  }
+
+  const canSubmitPaymentProof = Boolean(paymentSubmissionKind);
+  const isRemainingBalanceSubmission =
+    paymentSubmissionKind === "remaining_balance";
+  const remainingInitialDownPayment = Math.max(
+    downPaymentDue - verifiedPaymentTotal,
     0,
   );
+  const paymentSubmissionLimit = isRemainingBalanceSubmission
+    ? balanceDue
+    : remainingInitialDownPayment;
 
+  const estimationStatusKey = String(latestEstimation?.status || "")
+    .trim()
+    .toLowerCase();
+
+  // Quotation action buttons (approve / request revision / reject) may
+  // appear only when every one of these is true — mirrored exactly
+  // inside handleEstimationDecision before the request is actually sent,
+  // since a hidden/disabled button here is only UX protection and the
+  // backend remains the real security boundary.
   const canDecideOnQuote =
-    String(latestEstimation?.status || "")
-      .trim()
-      .toLowerCase() === "sent";
-
-  const canSubmitDownPayment =
-    String(latestEstimation?.status || "")
-      .trim()
-      .toLowerCase() === "approved" &&
-    !hasVerifiedDownPayment;
+    quotationAvailable &&
+    !quotationActionBlocked &&
+    !quotationIntegrityWarning &&
+    Boolean(latestEstimation) &&
+    estimationStatusKey === "sent" &&
+    orderStatusKey === "confirmed";
 
   useEffect(() => {
-    if (
-      String(latestEstimation?.status || "").trim().toLowerCase() === "approved" &&
-      !hasVerifiedDownPayment &&
-      !downPaymentAmount
-    ) {
-      setDownPaymentAmount(
-        remainingVerifiedBalance > 0
-          ? remainingVerifiedBalance.toFixed(2)
-          : "",
-      );
+    if (!canSubmitPaymentProof) {
+      setPaymentAmount("");
+      return;
     }
+
+    setPaymentAmount(
+      paymentSubmissionLimit > 0 ? paymentSubmissionLimit.toFixed(2) : "",
+    );
   }, [
-    latestEstimation?.status,
-    hasVerifiedDownPayment,
-    remainingVerifiedBalance,
-    downPaymentAmount,
+    canSubmitPaymentProof,
+    paymentSubmissionKind,
+    paymentSubmissionLimit,
   ]);
-  
+
   const activePaymentGuide =
-    PAYMENT_GUIDES[downPaymentMethod] || PAYMENT_GUIDES.gcash;
+    PAYMENT_GUIDES[paymentMethod] || PAYMENT_GUIDES.gcash;
 
   const displayPaymentMethod =
     !latestPayment &&
@@ -489,6 +557,16 @@ export default function CustomRequestDetailPage() {
 
   const handleEstimationDecision = async (action) => {
     if (!requestData?.id || !latestEstimation?.id) return;
+
+    // Same checks used to decide whether the buttons are even shown — a
+    // hidden/disabled button is only UX protection, so this is checked
+    // again here rather than trusted from the render alone.
+    if (!canDecideOnQuote) {
+      toast.error(
+        "This quotation can no longer be acted on. Please refresh the page.",
+      );
+      return;
+    }
 
     let endpoint = "";
     let payload = {};
@@ -535,61 +613,92 @@ export default function CustomRequestDetailPage() {
     }
   };
 
-  const handleSubmitDownPayment = async (e) => {
+  const handleSubmitPaymentProof = async (e) => {
     e.preventDefault();
 
     if (!requestData?.id) return;
 
-    const numericAmount = Number(downPaymentAmount);
+    if (quotationActionBlocked || quotationIntegrityWarning) {
+      toast.error(
+        "Your quotation is under review. Please contact support if you need assistance.",
+      );
+      return;
+    }
+
+    // The backend-provided action flags are the only frontend eligibility
+    // source. The selected endpoint still revalidates everything under
+    // transaction locks before accepting the uploaded proof.
+    if (!paymentSubmissionKind) {
+      toast.error(paymentActionMessage);
+      return;
+    }
+
+    if (!(paymentSubmissionLimit > 0)) {
+      toast.error(
+        "Payment details changed. Please refresh the page before submitting.",
+      );
+      return;
+    }
+
+    const numericAmount = Number(paymentAmount);
 
     if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
       toast.error("Enter a valid payment amount first.");
       return;
     }
 
-    if (numericAmount > remainingVerifiedBalance) {
+    if (numericAmount - paymentSubmissionLimit > 0.0001) {
       toast.error(
-        `Amount cannot exceed the remaining required verified balance of ${formatMoney(
-          remainingVerifiedBalance,
+        `Amount cannot exceed the current allowed amount of ${formatMoney(
+          paymentSubmissionLimit,
         )}.`,
       );
       return;
     }
 
-    if (!downPaymentFile) {
+    if (!paymentFile) {
       toast.error("Upload your proof of payment first.");
       return;
     }
 
-    const formData = new FormData();
-    formData.append("payment_method", downPaymentMethod);
-    formData.append("amount", String(numericAmount));
-    formData.append("proof", downPaymentFile);
+    const endpoint =
+      paymentSubmissionKind === "remaining_balance"
+        ? `/customer/custom-orders/${requestData.id}/remaining-balance`
+        : `/customer/custom-orders/${requestData.id}/down-payment`;
+    const successMessage =
+      paymentSubmissionKind === "remaining_balance"
+        ? "Remaining-balance payment proof submitted successfully."
+        : "Down payment proof submitted successfully.";
+    const failureMessage =
+      paymentSubmissionKind === "remaining_balance"
+        ? "Failed to submit remaining-balance payment proof."
+        : "Failed to submit down payment.";
 
-    setDownPaymentSubmitting(true);
+    const formData = new FormData();
+    formData.append("payment_method", paymentMethod);
+    formData.append("amount", String(numericAmount));
+    formData.append("proof", paymentFile);
+
+    setPaymentSubmitting(true);
     try {
-      await api.post(
-        `/customer/custom-orders/${requestData.id}/down-payment`,
-        formData,
-        {
-          headers: {
-            "Content-Type": "multipart/form-data",
-          },
+      await api.post(endpoint, formData, {
+        headers: {
+          "Content-Type": "multipart/form-data",
         },
-      );
+      });
 
       await loadRequestDetail(false);
-      setDownPaymentFile(null);
-      setDownPaymentAmount("");
-      toast.success("Down payment proof submitted successfully.");
+      setPaymentFile(null);
+      setPaymentAmount("");
+      toast.success(successMessage);
     } catch (err) {
       toast.error(
         err.response?.data?.message ||
           err.response?.data?.error ||
-          "Failed to submit down payment.",
+          failureMessage,
       );
     } finally {
-      setDownPaymentSubmitting(false);
+      setPaymentSubmitting(false);
     }
   };
 
@@ -884,20 +993,41 @@ export default function CustomRequestDetailPage() {
                     </div>
                   </div>
                 </div>
+              ) : quotationMessage ? (
+                <div className="checkout-section">
+                  <div className="checkout-section-header">
+                    <div className="checkout-section-num">02</div>
+                    <h3>Quotation status</h3>
+                  </div>
+
+                  <div className="checkout-section-body">
+                    <div
+                      className={
+                        quotationActionBlocked || quotationIntegrityWarning
+                          ? "crd-info-box pending"
+                          : "crd-info-box muted"
+                      }
+                    >
+                      {quotationMessage}
+                    </div>
+                  </div>
+                </div>
               ) : null}
 
-              {String(latestEstimation?.status || "").trim().toLowerCase() ===
-              "approved" ? (
+              {quotationAvailable &&
+              latestEstimation &&
+              !quotationActionBlocked &&
+              !quotationIntegrityWarning ? (
                 <div className="checkout-section">
                   <div className="checkout-section-header">
                     <div className="checkout-section-num">03</div>
-                    <h3>Required down payment</h3>
+                    <h3>Payment</h3>
                   </div>
 
                   <div className="checkout-section-body">
                     <div className="crd-grid-split">
                       <div className="crd-panel crd-panel-soft">
-                        <h4>Payment requirement</h4>
+                        <h4>Payment summary</h4>
 
                         <DetailValue label="Quoted total">
                           {formatMoney(quotedTotal || 0)}
@@ -907,25 +1037,22 @@ export default function CustomRequestDetailPage() {
                           {formatMoney(downPaymentDue || 0)}
                         </DetailValue>
 
-                        <DetailValue label="Remaining balance">
-                          {formatMoney(
-                            paymentSummary?.balance_due ||
-                              Math.max(quotedTotal - verifiedDownPaymentTotal, 0),
-                          )}
-                        </DetailValue>
-
-                        <DetailValue label="Verified down payment">
-                          {formatMoney(verifiedDownPaymentTotal || 0)}
+                        <DetailValue label="Verified payments">
+                          {formatMoney(verifiedPaymentTotal || 0)}
                         </DetailValue>
 
                         <DetailValue label="Pending submissions">
-                          {formatMoney(pendingDownPaymentTotal || 0)}
+                          {formatMoney(pendingPaymentTotal || 0)}
+                        </DetailValue>
+
+                        <DetailValue label="Remaining balance">
+                          {formatMoney(balanceDue || 0)}
                         </DetailValue>
 
                         <p className="crd-panel-copy muted">
-                          Your request will not move forward to contract release
-                          or production until the required down payment is
-                          submitted and verified.
+                          Only verified transactions reduce your remaining
+                          balance. Every uploaded proof still requires admin
+                          review.
                         </p>
 
                         {latestPayment ? (
@@ -952,31 +1079,29 @@ export default function CustomRequestDetailPage() {
                       </div>
 
                       <div className="crd-panel">
-                        <h4>Submit payment proof</h4>
+                        <h4>Payment action</h4>
 
-                        {hasVerifiedDownPayment ? (
-                          <div className="crd-info-box success">
-                            Your down payment is already verified.
-                          </div>
-                        ) : canSubmitDownPayment ? (
+                        {canSubmitPaymentProof ? (
                           <>
-                            {hasPendingDownPayment ? (
-                              <div className="crd-info-box pending">
-                                You already have pending payment submission(s). You may still send
-                                another proof if you are splitting the payment or correcting a previous
-                                upload. Admin will review each submission separately.
-                              </div>
-                            ) : null}
+                            <div
+                              className="crd-info-box"
+                              style={{ marginBottom: 14 }}
+                            >
+                              {paymentActionMessage}
+                            </div>
 
-                            <form onSubmit={handleSubmitDownPayment} className="crd-form-grid">
+                            <form
+                              onSubmit={handleSubmitPaymentProof}
+                              className="crd-form-grid"
+                            >
                               <label className="crd-field-label">
                                 Payment method
                               </label>
 
                               <select
-                                value={downPaymentMethod}
+                                value={paymentMethod}
                                 onChange={(e) =>
-                                  setDownPaymentMethod(e.target.value)
+                                  setPaymentMethod(e.target.value)
                                 }
                                 className="crd-control"
                               >
@@ -989,7 +1114,7 @@ export default function CustomRequestDetailPage() {
                                   {activePaymentGuide.title}
                                 </div>
 
-                                {downPaymentMethod === "gcash" ? (
+                                {paymentMethod === "gcash" ? (
                                   <>
                                     <div className="crd-payment-guide-copy">
                                       <div className="crd-payment-guide-row">
@@ -1003,8 +1128,14 @@ export default function CustomRequestDetailPage() {
                                       </div>
 
                                       <div className="crd-payment-guide-row">
-                                        <span>Remaining required amount</span>
-                                        <strong>{formatMoney(remainingVerifiedBalance || 0)}</strong>
+                                        <span>
+                                          {isRemainingBalanceSubmission
+                                            ? "Current remaining balance"
+                                            : "Remaining required down payment"}
+                                        </span>
+                                        <strong>
+                                          {formatMoney(paymentSubmissionLimit || 0)}
+                                        </strong>
                                       </div>
                                     </div>
 
@@ -1019,12 +1150,18 @@ export default function CustomRequestDetailPage() {
                                       />
                                     </div>
 
-                                    <div className="crd-help-text" style={{ marginTop: 0 }}>
+                                    <div
+                                      className="crd-help-text"
+                                      style={{ marginTop: 0 }}
+                                    >
                                       {activePaymentGuide.note}
                                     </div>
                                   </>
                                 ) : (
-                                  <div className="crd-info-box muted" style={{ marginTop: 0 }}>
+                                  <div
+                                    className="crd-info-box muted"
+                                    style={{ marginTop: 0 }}
+                                  >
                                     {PAYMENT_GUIDES.cash.note}
                                   </div>
                                 )}
@@ -1038,15 +1175,21 @@ export default function CustomRequestDetailPage() {
                                 type="number"
                                 min="0.01"
                                 step="0.01"
-                                value={downPaymentAmount}
-                                onChange={(e) => setDownPaymentAmount(e.target.value)}
+                                value={paymentAmount}
+                                onChange={(e) =>
+                                  setPaymentAmount(e.target.value)
+                                }
                                 className="crd-control"
                                 placeholder="Enter amount you are submitting now"
                               />
 
-                              <div className="crd-help-text" style={{ marginTop: -6 }}>
-                                You may submit the required 30% down payment in multiple sends, as long
-                                as the verified total does not exceed the required amount.
+                              <div
+                                className="crd-help-text"
+                                style={{ marginTop: -6 }}
+                              >
+                                {isRemainingBalanceSubmission
+                                  ? "You may submit the remaining balance in multiple sends, but only one proof may await review at a time."
+                                  : "You may submit the required 30% down payment in multiple sends, but only one proof may await review at a time."}
                               </div>
 
                               <label className="crd-field-label">
@@ -1057,7 +1200,7 @@ export default function CustomRequestDetailPage() {
                                 type="file"
                                 accept=".jpg,.jpeg,.png,.pdf"
                                 onChange={(e) =>
-                                  setDownPaymentFile(e.target.files?.[0] || null)
+                                  setPaymentFile(e.target.files?.[0] || null)
                                 }
                                 className="crd-file-input"
                               />
@@ -1065,20 +1208,21 @@ export default function CustomRequestDetailPage() {
                               <button
                                 type="submit"
                                 className="btn btn-primary"
-                                disabled={downPaymentSubmitting}
+                                disabled={paymentSubmitting}
                               >
-                                {downPaymentSubmitting
+                                {paymentSubmitting
                                   ? "Submitting..."
                                   : `Submit ${formatMoney(
-                                      Number(downPaymentAmount || 0),
-                                    )} payment`}
+                                      Number(paymentAmount || 0),
+                                    )} proof`}
                               </button>
                             </form>
                           </>
                         ) : (
-                          <div className="crd-info-box muted">
-                            Approve the quotation first before submitting the
-                            required down payment.
+                          <div
+                            className={`crd-info-box ${paymentActionTone}`}
+                          >
+                            {paymentActionMessage}
                           </div>
                         )}
                       </div>

@@ -495,7 +495,13 @@ exports.updateDeliveryStatus = async (req, res) => {
          COALESCE(
            SUM(CASE WHEN LOWER(status) = 'verified' THEN amount ELSE 0 END),
            0
-         ) AS verified_total
+         ) AS verified_total,
+         MAX(
+           CASE
+             WHEN LOWER(status) = 'pending' THEN 1
+             ELSE 0
+           END
+         ) AS has_pending
        FROM payment_transactions
        WHERE order_id = ?`,
       [existing.order_id],
@@ -505,12 +511,33 @@ exports.updateDeliveryStatus = async (req, res) => {
     const verifiedTotalBefore = Number(
       paymentSummaryBefore?.verified_total || 0,
     );
+    // Never subtracted from currentBalance — a pending proof may later be
+    // rejected, so the true outstanding balance always stays based only
+    // on verified amounts.
     const currentBalance = Math.max(0, totalAmount - verifiedTotalBefore);
+    const hasPendingPaymentBefore =
+      Number(paymentSummaryBefore?.has_pending || 0) === 1;
 
     const isCompletingDeliveryNow =
       requestedStatus === "delivered" && currentStatus !== "delivered";
 
-    if (isCompletingDeliveryNow && currentBalance > 0.009) {
+    // One condition, used consistently everywhere a rider collection is
+    // gated below — never a re-derived or slightly different version of
+    // the same check.
+    const shouldRecordDeliveryCollection =
+      isCompletingDeliveryNow &&
+      currentBalance > 0.009 &&
+      !hasPendingPaymentBefore;
+
+    // A real balance is due, but an existing real payment_transactions
+    // row is already pending review — delivery still completes, but no
+    // second, redundant pending collection is created.
+    const collectionSkippedForPendingPayment =
+      isCompletingDeliveryNow &&
+      currentBalance > 0.009 &&
+      hasPendingPaymentBefore;
+
+    if (shouldRecordDeliveryCollection) {
       if (!(collectedAmount > 0)) {
         await conn.rollback();
         return res.status(400).json({
@@ -570,7 +597,7 @@ exports.updateDeliveryStatus = async (req, res) => {
       ],
     );
 
-    if (isCompletingDeliveryNow && currentBalance > 0.009) {
+    if (shouldRecordDeliveryCollection) {
       const paymentNotes = [
         `Collected on delivery by ${req.user.name || "assigned rider"}.`,
         `Order: ${order.order_number || `#${existing.order_id}`}`,
@@ -664,11 +691,7 @@ exports.updateDeliveryStatus = async (req, res) => {
       );
     }
 
-    if (
-      existing.assigned_by &&
-      isCompletingDeliveryNow &&
-      currentBalance > 0.009
-    ) {
+    if (existing.assigned_by && shouldRecordDeliveryCollection) {
       await conn.query(
         // 👉 ADDED is_read and created_at
         `INSERT INTO notifications (user_id, type, title, message, is_read, channel, sent_at, created_at)
@@ -787,20 +810,23 @@ exports.updateDeliveryStatus = async (req, res) => {
         order_status_after: nextOrderStatus || order.status,
         order_payment_status_before: order.payment_status,
         order_payment_status_after: nextOrderPaymentStatus,
-        payment_transaction_created:
-          isCompletingDeliveryNow && currentBalance > 0.009,
-        payment_collected:
-          isCompletingDeliveryNow && currentBalance > 0.009
-            ? { amount: collectedAmount, method: collectedPaymentMethod }
-            : null,
+        payment_transaction_created: shouldRecordDeliveryCollection,
+        payment_collected: shouldRecordDeliveryCollection
+          ? { amount: collectedAmount, method: collectedPaymentMethod }
+          : null,
+        collection_skipped_due_to_pending_payment:
+          collectionSkippedForPendingPayment,
       },
     };
 
     let message = "Delivery updated successfully";
 
-    if (isCompletingDeliveryNow && currentBalance > 0.009) {
+    if (shouldRecordDeliveryCollection) {
       message =
         "Delivery completed. Final collected payment is now pending admin verification.";
+    } else if (collectionSkippedForPendingPayment) {
+      message =
+        "Delivery completed. An existing payment proof is already pending admin verification, so no additional collection was recorded.";
     } else if (requestedStatus === "delivered" && uploadedReceiptPath) {
       message =
         "Delivery marked as delivered and signed receipt uploaded successfully";

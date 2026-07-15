@@ -1,6 +1,10 @@
 // controllers/blueprintController.js
 const path = require("path");
 const pool = require("../../config/db");
+const {
+  resolveLifecycleByBlueprint,
+  resolveLifecycleByOrder,
+} = require("../../services/blueprintLifecycleService");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function safeJsonParse(value, fallback = {}) {
@@ -1409,53 +1413,112 @@ exports.permanentDelete = async (req, res) => {
 
 // ── GET /api/blueprints/:id/estimation ───────────────────────────────────────
 exports.getEstimation = async (req, res) => {
+  const conn = await pool.getConnection();
+
   try {
-    const [[est]] = await pool.query(
-      `SELECT *
-       FROM estimations
-       WHERE blueprint_id = ?
-       ORDER BY version DESC, id DESC
-       LIMIT 1`,
-      [parseInt(req.params.id)],
-    );
+    const blueprintId = parseInt(req.params.id);
+    const lifecycle = await resolveLifecycleByBlueprint(conn, { blueprintId });
 
-    if (!est) {
-      const conn = await pool.getConnection();
-
-      try {
-        const autoDraft = await buildAutoEstimationDraft(conn, req.params.id);
-
-        if (!autoDraft) {
-          return res.status(404).json({ message: "No estimation yet." });
-        }
-
-        return res.json({
-          id: null,
-          blueprint_id: Number(req.params.id),
-          version: autoDraft.version || 0,
-          status: autoDraft.status || "draft",
-          auto_generated: true,
-          auto_source: autoDraft.source || "unknown",
-          items: autoDraft.items || [],
-          material_cost: autoDraft.material_cost || 0,
-          items_total: autoDraft.items_total || 0,
-          labor_cost: autoDraft.labor_cost || 0,
-          overhead_cost: autoDraft.overhead_cost || 0,
-          tax_rate: autoDraft.tax_rate ?? 12,
-          discount: autoDraft.discount || 0,
-          notes: autoDraft.notes || "",
-          subtotal: autoDraft.subtotal || 0,
-          tax_amount: autoDraft.tax_amount || 0,
-          grand_total: autoDraft.grand_total || 0,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        });
-      } finally {
-        conn.release();
-      }
+    // ── MULTIPLE_ORDER_OWNERS: no auto-draft, no active estimation ────────
+    // Never guessed, never served — manual review required.
+    if (lifecycle.reason === "MULTIPLE_ORDER_OWNERS") {
+      return res.status(409).json({
+        message: lifecycle.message,
+        integrity_warning: true,
+        integrity_reason: lifecycle.reason,
+        conflicting_order_ids: lifecycle.conflicting_order_ids,
+      });
     }
 
-    const [itemRows] = await pool.query(
+    // ── STALE_ESTIMATION: never serve the stale row as the active one ─────
+    if (lifecycle.reason === "STALE_ESTIMATION") {
+      const response = {
+        id: null,
+        blueprint_id: Number(blueprintId),
+        integrity_warning: true,
+        integrity_reason: lifecycle.reason,
+        stale_candidate: lifecycle.stale_candidate
+          ? {
+              id: lifecycle.stale_candidate.id,
+              created_at: lifecycle.stale_candidate.created_at,
+              status: lifecycle.stale_candidate.status,
+              grand_total: lifecycle.stale_candidate.grand_total,
+            }
+          : null,
+        can_create_replacement_estimation:
+          lifecycle.can_create_replacement_estimation,
+        recovery_block_reason: lifecycle.recovery_block_reason,
+      };
+
+      // Only attach an unpersisted recovery draft when recovery is actually
+      // allowed — reuses the same generator as the NO_ESTIMATION path below.
+      if (lifecycle.can_create_replacement_estimation) {
+        const autoDraft = await buildAutoEstimationDraft(conn, blueprintId);
+
+        if (autoDraft) {
+          Object.assign(response, {
+            version: autoDraft.version || 0,
+            status: autoDraft.status || "draft",
+            auto_generated: true,
+            auto_source: autoDraft.source || "unknown",
+            is_recovery_draft: true,
+            persisted: false,
+            items: autoDraft.items || [],
+            material_cost: autoDraft.material_cost || 0,
+            items_total: autoDraft.items_total || 0,
+            labor_cost: autoDraft.labor_cost || 0,
+            overhead_cost: autoDraft.overhead_cost || 0,
+            tax_rate: autoDraft.tax_rate ?? 12,
+            discount: autoDraft.discount || 0,
+            notes: autoDraft.notes || "",
+            subtotal: autoDraft.subtotal || 0,
+            tax_amount: autoDraft.tax_amount || 0,
+            grand_total: autoDraft.grand_total || 0,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          });
+        }
+      }
+
+      return res.json(response);
+    }
+
+    // ── NO_ESTIMATION (or a resolved-but-missing blueprint): preserve the
+    //    existing auto-draft behavior exactly, unchanged from before. ──────
+    if (!lifecycle.estimation) {
+      const autoDraft = await buildAutoEstimationDraft(conn, blueprintId);
+
+      if (!autoDraft) {
+        return res.status(404).json({ message: "No estimation yet." });
+      }
+
+      return res.json({
+        id: null,
+        blueprint_id: Number(blueprintId),
+        version: autoDraft.version || 0,
+        status: autoDraft.status || "draft",
+        auto_generated: true,
+        auto_source: autoDraft.source || "unknown",
+        items: autoDraft.items || [],
+        material_cost: autoDraft.material_cost || 0,
+        items_total: autoDraft.items_total || 0,
+        labor_cost: autoDraft.labor_cost || 0,
+        overhead_cost: autoDraft.overhead_cost || 0,
+        tax_rate: autoDraft.tax_rate ?? 12,
+        discount: autoDraft.discount || 0,
+        notes: autoDraft.notes || "",
+        subtotal: autoDraft.subtotal || 0,
+        tax_amount: autoDraft.tax_amount || 0,
+        grand_total: autoDraft.grand_total || 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+    }
+
+    // ── Normal path: lifecycle-valid estimation only ───────────────────────
+    const est = lifecycle.estimation;
+
+    const [itemRows] = await conn.query(
       `SELECT id, estimation_id, component_id, raw_material_id, description, quantity, unit_cost, subtotal
        FROM estimation_items
        WHERE estimation_id = ?
@@ -1533,12 +1596,15 @@ exports.getEstimation = async (req, res) => {
       subtotal,
       tax_amount,
       grand_total,
+      integrity_warning: false,
       created_at: est.created_at || new Date().toISOString(),
       updated_at: est.updated_at || est.created_at || new Date().toISOString(),
     });
   } catch (err) {
     console.error("getEstimation error:", err);
     res.status(err.statusCode || 500).json({ message: err.message });
+  } finally {
+    conn.release();
   }
 };
 
@@ -1549,12 +1615,14 @@ exports.saveEstimation = async (req, res) => {
   try {
     await conn.beginTransaction();
 
+    const blueprintId = parseInt(req.params.id);
+
     const [[bp]] = await conn.query(
       `SELECT id, stage, is_deleted
        FROM blueprints
        WHERE id = ?
        LIMIT 1`,
-      [parseInt(req.params.id)],
+      [blueprintId],
     );
 
     if (!bp) {
@@ -1567,6 +1635,133 @@ exports.saveEstimation = async (req, res) => {
       return res
         .status(400)
         .json({ message: "Cannot save estimation for archived blueprint." });
+    }
+
+    const initialLifecycle = await resolveLifecycleByBlueprint(conn, {
+      blueprintId,
+    });
+
+    // MULTIPLE_ORDER_OWNERS always blocks — never guessed, manual review
+    // required regardless of any other condition. Structural ambiguity
+    // across multiple orders isn't something a single-row lock can
+    // protect against, so this check runs against the unlocked
+    // classification.
+    if (initialLifecycle.reason === "MULTIPLE_ORDER_OWNERS") {
+      await conn.rollback();
+      return res.status(409).json({
+        message: initialLifecycle.message,
+        integrity_reason: initialLifecycle.reason,
+        conflicting_order_ids: initialLifecycle.conflicting_order_ids,
+      });
+    }
+
+    if (
+      initialLifecycle.status === "BLOCKED" &&
+      initialLifecycle.reason !== "STALE_ESTIMATION"
+    ) {
+      // Realistically only BLUEPRINT_NOT_FOUND can reach here from a
+      // blueprint-scoped call (e.g. a race where the blueprint was
+      // deleted between the check above and this resolution).
+      await conn.rollback();
+      return res.status(409).json({
+        message: initialLifecycle.message,
+        integrity_reason: initialLifecycle.reason,
+      });
+    }
+
+    // ── Concurrency protection ─────────────────────────────────────────
+    // If a canonical order is linked, re-resolve it under FOR UPDATE so
+    // the final eligibility decision is made against fresh, locked data
+    // — not the snapshot read a moment earlier, which a concurrent
+    // request (a payment verification, a contract generation) could have
+    // changed in between. Blueprint-only context (no linked order, e.g.
+    // templates) has no order row to lock and keeps the original,
+    // unlocked classification.
+    let lifecycle = initialLifecycle;
+
+    if (initialLifecycle.order) {
+      lifecycle = await resolveLifecycleByOrder(conn, {
+        orderId: initialLifecycle.order.id,
+        lockOrder: true,
+      });
+
+      if (lifecycle.reason === "MULTIPLE_ORDER_OWNERS") {
+        await conn.rollback();
+        return res.status(409).json({
+          message: lifecycle.message,
+          integrity_reason: lifecycle.reason,
+          conflicting_order_ids: lifecycle.conflicting_order_ids,
+        });
+      }
+
+      if (
+        lifecycle.status === "BLOCKED" &&
+        lifecycle.reason !== "STALE_ESTIMATION"
+      ) {
+        await conn.rollback();
+        return res.status(409).json({
+          message: lifecycle.message,
+          integrity_reason: lifecycle.reason,
+        });
+      }
+    }
+
+    // STALE_ESTIMATION blocks unless the (now-locked, re-checked)
+    // resolver confirms a replacement is still safe to create.
+    if (
+      lifecycle.reason === "STALE_ESTIMATION" &&
+      !lifecycle.can_create_replacement_estimation
+    ) {
+      await conn.rollback();
+      return res.status(409).json({
+        message: lifecycle.message,
+        integrity_reason: lifecycle.reason,
+        recovery_block_reason: lifecycle.recovery_block_reason,
+      });
+    }
+
+    // Final order-state gate, re-checked against the locked row. A
+    // linked order must be exactly "confirmed" — "pending" is no longer
+    // accepted here, since a blueprint only ever gets linked to an order
+    // once that order has already been approved into "confirmed" by
+    // approveCustomRequest. Blueprint-only context (no linked order)
+    // skips this gate entirely.
+    const order = lifecycle.order;
+
+    if (order) {
+      const normalizedStatus = String(order.status || "").toLowerCase();
+
+      if (normalizedStatus !== "confirmed") {
+        await conn.rollback();
+        return res.status(409).json({
+          message: `Order status is "${order.status}"; must be exactly "confirmed" to save an estimation.`,
+          integrity_reason: "ORDER_NOT_CONFIRMED",
+        });
+      }
+
+      if (lifecycle.contract) {
+        await conn.rollback();
+        return res.status(409).json({
+          message: "A contract already exists for this order.",
+          integrity_reason: "CONTRACT_EXISTS",
+        });
+      }
+
+      if (lifecycle.verified_payment_total > 0) {
+        await conn.rollback();
+        return res.status(409).json({
+          message: `Order already has a verified payment total of ${lifecycle.verified_payment_total}.`,
+          integrity_reason: "VERIFIED_PAYMENT_EXISTS",
+        });
+      }
+
+      if (lifecycle.has_pending_payment_transaction) {
+        await conn.rollback();
+        return res.status(409).json({
+          message: "Order has a pending payment proof awaiting review.",
+          integrity_reason: "PENDING_PAYMENT_EXISTS",
+        });
+      }
     }
 
     const {
@@ -1588,16 +1783,13 @@ exports.saveEstimation = async (req, res) => {
       discount,
     });
 
-    const [[existing]] = await conn.query(
-      `SELECT id, version
-       FROM estimations
-       WHERE blueprint_id = ?
-       ORDER BY version DESC, id DESC
-       LIMIT 1`,
-      [parseInt(req.params.id)],
-    );
-
-    const version = existing ? Number(existing.version || 0) + 1 : 1;
+    // Version calculation uses the lifecycle-valid estimation only — a
+    // stale row is never used to derive the next version number, so a
+    // reused blueprint_id can no longer inflate a fresh blueprint's first
+    // real estimation into "version 4" or similar.
+    const version = lifecycle.estimation
+      ? Number(lifecycle.estimation.version || 0) + 1
+      : 1;
 
     const estimation_data = JSON.stringify({
       items: normalizedItems,
@@ -1618,7 +1810,7 @@ exports.saveEstimation = async (req, res) => {
         (blueprint_id, version, material_cost, labor_cost, tax, discount, grand_total, estimation_data, status)
        VALUES (?,?,?,?,?,?,?,?,'draft')`,
       [
-        parseInt(req.params.id),
+        blueprintId,
         version,
         totals.material_cost,
         totals.labor_cost,
@@ -1649,28 +1841,46 @@ exports.saveEstimation = async (req, res) => {
       `UPDATE blueprints
        SET stage = 'estimation'
        WHERE id = ? AND is_deleted = 0`,
-      [parseInt(req.params.id)],
+      [blueprintId],
     );
 
-    await conn.query(
-      `UPDATE orders
-       SET subtotal = ?,
-           tax = ?,
-           discount = ?,
-           total = ?,
-           down_payment = ?,
-           updated_at = NOW()
-       WHERE blueprint_id = ?
-         AND order_type = 'blueprint'`,
-      [
-        totals.subtotal,
-        totals.tax_amount,
-        totals.discount,
-        totals.grand_total,
-        Number((totals.grand_total * 0.3).toFixed(2)),
-        parseInt(req.params.id),
-      ],
-    );
+    // Restricted to the ONE canonical linked order, locked and re-checked
+    // moments earlier — never a blanket WHERE blueprint_id = ? match.
+    // The WHERE clause repeats order_type/status as a final DB-level
+    // backstop even though both were already verified under lock above,
+    // and affectedRows is checked so the new estimation can never be
+    // committed while the order it belongs to silently failed to update.
+    if (order) {
+      const [orderUpdateResult] = await conn.query(
+        `UPDATE orders
+         SET subtotal = ?,
+             tax = ?,
+             discount = ?,
+             total = ?,
+             down_payment = ?,
+             updated_at = NOW()
+         WHERE id = ?
+           AND order_type = 'blueprint'
+           AND status = 'confirmed'`,
+        [
+          totals.subtotal,
+          totals.tax_amount,
+          totals.discount,
+          totals.grand_total,
+          Number((totals.grand_total * 0.3).toFixed(2)),
+          order.id,
+        ],
+      );
+
+      if (orderUpdateResult.affectedRows === 0) {
+        await conn.rollback();
+        return res.status(409).json({
+          message:
+            "Order status changed before the estimation could be saved. Please refresh and try again.",
+          integrity_reason: "ORDER_STATE_CHANGED",
+        });
+      }
+    }
 
     await conn.commit();
 
@@ -1679,7 +1889,7 @@ exports.saveEstimation = async (req, res) => {
       id: insertResult.insertId,
       estimation: {
         id: insertResult.insertId,
-        blueprint_id: Number(req.params.id),
+        blueprint_id: blueprintId,
         version,
         items: normalizedItems,
         material_cost: totals.material_cost,
@@ -1738,19 +1948,68 @@ exports.approveEstimation = async (req, res) => {
       });
     }
 
-    const [[latestEstimation]] = await conn.query(
-      `SELECT *
-       FROM estimations
-       WHERE blueprint_id = ?
-       ORDER BY version DESC, id DESC
-       LIMIT 1`,
-      [blueprintId],
-    );
+    // Resolved through the lifecycle service instead of a raw
+    // blueprint_id-only query — a stale ghost estimation can no longer be
+    // sent, and can no longer trigger the old "already approved by the
+    // customer" trap, since a stale row is never returned as .estimation.
+    const lifecycle = await resolveLifecycleByBlueprint(conn, { blueprintId });
 
-    if (!latestEstimation) {
+    if (lifecycle.status === "BLOCKED") {
+      await conn.rollback();
+      return res.status(409).json({
+        message: lifecycle.message,
+        integrity_reason: lifecycle.reason,
+        conflicting_order_ids: lifecycle.conflicting_order_ids,
+        can_create_replacement_estimation:
+          lifecycle.can_create_replacement_estimation,
+        recovery_block_reason: lifecycle.recovery_block_reason,
+      });
+    }
+
+    if (!lifecycle.estimation) {
       await conn.rollback();
       return res.status(404).json({
         message: "No estimation found to send.",
+      });
+    }
+
+    const latestEstimation = lifecycle.estimation;
+    const order = lifecycle.order;
+
+    if (!order) {
+      await conn.rollback();
+      return res.status(400).json({
+        message: "This blueprint is not yet linked to an order.",
+      });
+    }
+
+    if (String(order.status || "").toLowerCase() !== "confirmed") {
+      await conn.rollback();
+      return res.status(400).json({
+        message: `Order must be confirmed before a quotation can be sent (current status: "${order.status}").`,
+      });
+    }
+
+    if (lifecycle.contract) {
+      await conn.rollback();
+      return res.status(400).json({
+        message:
+          "A contract already exists for this order; the quotation can no longer be sent for revision.",
+      });
+    }
+
+    if (lifecycle.verified_payment_total > 0) {
+      await conn.rollback();
+      return res.status(400).json({
+        message: `Order already has a verified payment total of ${lifecycle.verified_payment_total}; this quotation can no longer be revised or re-sent.`,
+      });
+    }
+
+    if (lifecycle.has_pending_payment_transaction) {
+      await conn.rollback();
+      return res.status(400).json({
+        message:
+          "Order has a pending payment proof awaiting review; resolve it through the normal payment-review flow before sending a new quotation.",
       });
     }
 

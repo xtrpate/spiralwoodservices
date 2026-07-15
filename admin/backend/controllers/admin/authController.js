@@ -5,7 +5,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 // const nodemailer = require("nodemailer");
 const pool = require("../../config/db"); 
-const { verifyRecaptcha } = require("../../utils/verifyRecaptcha");
+
 require("dotenv").config();
 
 // ══════════════════════════════════════════════════════════════
@@ -65,7 +65,7 @@ const sendOtpEmail = async (email, otp, name) => {
 // ══════════════════════════════════════════════════════════════
 exports.login = async (req, res) => {
   try {
-    const { email, password, recaptcha_token } = req.body;
+    const { email, password } = req.body;
     
     if (!email || !password) {
       return res.status(400).json({ message: "Email and password are required." });
