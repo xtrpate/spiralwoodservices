@@ -4,6 +4,7 @@ import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import useAuthStore from "../../store/authStore";
 import toast from "react-hot-toast";
 import { useCart } from "../../pages/customer/cartcontext";
+import NotificationBell from "../NotificationBell";
 import "./AdminLayout.css";
 
 const NAV_ITEMS = [
@@ -375,6 +376,8 @@ export default function AdminLayout() {
           >
             ☰
           </button>
+
+          <NotificationBell />
 
           <span
             className="wisdom-admin-user-badge"

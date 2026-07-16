@@ -72,7 +72,6 @@ export default function TasksPage() {
   const [tasks, setTasks] = useState([]);
   const [staff, setStaff] = useState([]);
   const [orders, setOrders] = useState([]);
-  const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState(BLANK);
@@ -82,17 +81,11 @@ export default function TasksPage() {
   const [filterRole, setFilterRole] = useState("all");
   const [search, setSearch] = useState("");
 
-  const unreadCount = notifications.filter((n) => !n.is_read).length;
-
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [{ data: t }, { data: n }] = await Promise.all([
-        api.get("/tasks"),
-        api.get("/tasks/notifications"),
-      ]);
+      const { data: t } = await api.get("/tasks");
       setTasks(t);
-      setNotifications(n);
       if (isAdmin) {
         const [{ data: s }, { data: o }] = await Promise.all([
           api.get("/tasks/staff-list"),
@@ -111,17 +104,6 @@ export default function TasksPage() {
   useEffect(() => {
     load();
   }, [load]);
-
-  // Poll notifications every 30s
-  useEffect(() => {
-    const iv = setInterval(async () => {
-      try {
-        const { data } = await api.get("/tasks/notifications");
-        setNotifications(data);
-      } catch {}
-    }, 30000);
-    return () => clearInterval(iv);
-  }, []);
 
   const openCreate = () => {
     setForm(BLANK);
@@ -207,23 +189,6 @@ export default function TasksPage() {
         toast.error(err.response?.data?.message || "Task not found.");
       }
     }
-  };
-
-  const markAllRead = async () => {
-    try {
-      await api.patch("/tasks/notifications/read-all");
-      setNotifications((p) => p.map((n) => ({ ...n, is_read: 1 })));
-      toast.success("All notifications cleared.");
-    } catch {}
-  };
-
-  const markOneRead = async (id) => {
-    try {
-      await api.patch(`/tasks/notifications/${id}/read`);
-      setNotifications((p) =>
-        p.map((n) => (n.id === id ? { ...n, is_read: 1 } : n)),
-      );
-    } catch {}
   };
 
   // Filters
@@ -415,15 +380,6 @@ export default function TasksPage() {
     },
     mRow: { marginBottom: 18 },
     half: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 },
-    notifItem: (isRead) => ({
-      padding: "14px 16px",
-      borderRadius: 10,
-      marginBottom: 10,
-      cursor: "pointer",
-      background: isRead ? "#ffffff" : "#fafafa",
-      border: `1px solid ${isRead ? "#e4e4e7" : "#d4d4d8"}`,
-      transition: "background 0.2s",
-    }),
   };
 
   const isEditingRequiredProductionTask =
@@ -440,36 +396,6 @@ export default function TasksPage() {
               ? "Assign project tasks to staff and track progress."
               : "Your assigned tasks and their current status."}
           </p>
-        </div>
-        <div style={{ display: "flex", gap: 10 }}>
-          <button
-            style={{ ...S.btn, ...S.btnGray, position: "relative" }}
-            onClick={() => setModal("notif")}
-          >
-            🔔 Notifications
-            {unreadCount > 0 && (
-              <span
-                style={{
-                  position: "absolute",
-                  top: -6,
-                  right: -6,
-                  background: "#dc2626",
-                  color: "#fff",
-                  borderRadius: "50%",
-                  width: 20,
-                  height: 20,
-                  fontSize: 10,
-                  fontWeight: 800,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  border: "2px solid #f4f4f5",
-                }}
-              >
-                {unreadCount > 9 ? "9+" : unreadCount}
-              </span>
-            )}
-          </button>
         </div>
       </div>
 
@@ -998,117 +924,6 @@ export default function TasksPage() {
           );
         })()}
 
-      {/* ── Notifications Modal ─────────────────────────────────────────────── */}
-      {modal === "notif" && (
-        <div style={S.overlay} onClick={() => setModal(null)}>
-          <div
-            style={{ ...S.modal, width: 480 }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginBottom: 20,
-              }}
-            >
-              <div style={S.mTitle} className="no-margin">
-                🔔 Notifications
-              </div>
-              {unreadCount > 0 && (
-                <button
-                  style={{
-                    ...S.btn,
-                    ...S.btnGray,
-                    fontSize: 12,
-                    padding: "6px 12px",
-                  }}
-                  onClick={markAllRead}
-                >
-                  Mark all read
-                </button>
-              )}
-            </div>
-            {notifications.length === 0 ? (
-              <div
-                style={{
-                  textAlign: "center",
-                  color: "#71717a",
-                  padding: 30,
-                  fontSize: 13,
-                  fontWeight: 600,
-                }}
-              >
-                No notifications yet.
-              </div>
-            ) : (
-              notifications.map((n) => (
-                <div
-                  key={n.id}
-                  style={S.notifItem(!n.is_read)}
-                  onClick={() => {
-                    if (!n.is_read) markOneRead(n.id);
-                  }}
-                >
-                  <div
-                    style={{
-                      fontSize: 13,
-                      fontWeight: 800,
-                      color: "#18181b",
-                      marginBottom: 4,
-                    }}
-                  >
-                    {n.title}
-                  </div>
-                  <div
-                    style={{
-                      fontSize: 13,
-                      color: "#52525b",
-                      marginBottom: 8,
-                      lineHeight: 1.5,
-                    }}
-                  >
-                    {n.message}
-                  </div>
-                  <div
-                    style={{
-                      fontSize: 11,
-                      color: "#71717a",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      fontWeight: 600,
-                    }}
-                  >
-                    <span>
-                      {new Date(n.created_at).toLocaleString("en-PH")}
-                    </span>
-                    {!n.is_read && (
-                      <span style={{ color: "#0a0a0a", fontWeight: 800 }}>
-                        ● Unread
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))
-            )}
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "flex-end",
-                marginTop: 16,
-              }}
-            >
-              <button
-                style={{ ...S.btn, ...S.btnGray }}
-                onClick={() => setModal(null)}
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

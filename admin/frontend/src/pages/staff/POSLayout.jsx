@@ -18,6 +18,7 @@ import { useMemo, useState } from "react";
 import "./POSLayout.css";
 import useAuthStore from "../../store/authStore";
 import { useCart } from "../../pages/customer/cartcontext";
+import NotificationBell from "../../components/NotificationBell";
 
 export default function POSLayout() {
   const { user, logout } = useAuthStore();
@@ -149,6 +150,7 @@ export default function POSLayout() {
               </div>
             )}
           </div>
+          {(isIndoorStaff || isDeliveryRider) && <NotificationBell compact />}
           <button className="logout-btn" onClick={handleLogout} title="Logout">
             <LogOut size={18} />
           </button>
