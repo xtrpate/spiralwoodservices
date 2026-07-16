@@ -309,6 +309,7 @@ router.patch(
 router.patch(
   "/orders/:id/tasks/:taskId/status",
   adminOnly,
+  logAction("update_project_task_status", "project_tasks"),
   orders.updateTaskStatus,
 );
 

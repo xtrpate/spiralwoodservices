@@ -2242,6 +2242,11 @@ exports.updateTaskStatus = async (req, res) => {
       });
     }
 
+    req.auditRecord = {
+      id: taskId,
+      old: { status: currentStatus },
+      new: { status: nextStatus },
+    };
     res.json({ message: "Task status updated successfully." });
   } catch (err) {
     console.error("orders.updateTaskStatus:", err);
