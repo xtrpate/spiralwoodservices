@@ -8,6 +8,7 @@ const DELIVERY_TRANSITIONS = {
   scheduled: ["scheduled", "in_transit"],
   in_transit: ["in_transit", "delivered", "failed"],
   delivered: ["delivered", "in_transit"],
+  failed: [],
 };
 const normalizeText = (value) => String(value || "").trim();
 
@@ -98,11 +99,15 @@ exports.getDeliverableOrders = async (req, res) => {
 
       FROM orders o
       LEFT JOIN users customer ON customer.id = o.customer_id
-      LEFT JOIN deliveries d ON d.order_id = o.id
 
       WHERE o.status IN ('confirmed', 'contract_released', 'production', 'shipping')
         AND COALESCE(o.delivery_address, '') <> ''
-        AND d.id IS NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM deliveries d2
+          WHERE d2.order_id = o.id
+            AND d2.status <> 'failed'
+        )
 
       ORDER BY o.created_at DESC, o.id DESC
       LIMIT 200
@@ -270,7 +275,7 @@ exports.createDelivery = async (req, res) => {
       SELECT id, status
       FROM deliveries
       WHERE order_id = ?
-      ORDER BY id DESC
+        AND status <> 'failed'
       LIMIT 1
       `,
       [orderId],
@@ -421,6 +426,7 @@ exports.updateDeliveryStatus = async (req, res) => {
     req.body.payment_method,
   ).toLowerCase();
   const collectionNotes = normalizeText(req.body.collection_notes) || "";
+  const failureReason = normalizeText(req.body.failure_reason);
 
   if (!deliveryId) {
     return res.status(400).json({ message: "Invalid delivery id" });
@@ -428,6 +434,19 @@ exports.updateDeliveryStatus = async (req, res) => {
 
   if (!DELIVERY_STATUSES.includes(requestedStatus)) {
     return res.status(400).json({ message: "Invalid delivery status" });
+  }
+
+  if (requestedStatus === "failed") {
+    if (!failureReason) {
+      return res
+        .status(400)
+        .json({ message: "A failure reason is required." });
+    }
+    if (failureReason.length > 500) {
+      return res.status(400).json({
+        message: "Failure reason must be 500 characters or fewer.",
+      });
+    }
   }
 
   let conn;
@@ -592,6 +611,16 @@ exports.updateDeliveryStatus = async (req, res) => {
       deliveredDate = null;
     }
 
+    let nextNotesForUpdate =
+      nextNotes !== undefined ? nextNotes : (existing.notes ?? null);
+
+    if (requestedStatus === "failed") {
+      const failureLine = `Failure Reason: ${failureReason}`;
+      nextNotesForUpdate = nextNotesForUpdate
+        ? `${nextNotesForUpdate}\n${failureLine}`
+        : failureLine;
+    }
+
     await conn.query(
       `
       UPDATE deliveries
@@ -605,7 +634,7 @@ exports.updateDeliveryStatus = async (req, res) => {
       `,
       [
         requestedStatus,
-        nextNotes !== undefined ? nextNotes : (existing.notes ?? null),
+        nextNotesForUpdate,
         deliveredDate,
         nextSignedReceipt,
         deliveryId,
@@ -695,13 +724,19 @@ exports.updateDeliveryStatus = async (req, res) => {
       existing.assigned_by &&
       Number(existing.assigned_by) !== Number(req.user.id)
     ) {
+      const isFailureUpdate = requestedStatus === "failed";
       await conn.query(
         // 👉 ADDED is_read and created_at
         `INSERT INTO notifications (user_id, type, title, message, is_read, channel, sent_at, created_at)
-         VALUES (?, 'delivery_update', 'Delivery Status Updated', ?, 0, 'system', NOW(), NOW())`,
+         VALUES (?, 'delivery_update', ?, ?, 0, 'system', NOW(), NOW())`,
         [
           existing.assigned_by,
-          `${req.user.name || "Assigned rider"} updated delivery #${deliveryId} to ${requestedStatus.replace(/_/g, " ")}.`,
+          isFailureUpdate
+            ? "Delivery Marked as Failed"
+            : "Delivery Status Updated",
+          isFailureUpdate
+            ? `${req.user.name || "Assigned rider"} marked delivery #${deliveryId} as failed for ${order.order_number || `#${existing.order_id}`}. Reason: ${failureReason}.`
+            : `${req.user.name || "Assigned rider"} updated delivery #${deliveryId} to ${requestedStatus.replace(/_/g, " ")}.`,
         ],
       );
     }
@@ -847,6 +882,8 @@ exports.updateDeliveryStatus = async (req, res) => {
         "Delivery marked as delivered and signed receipt uploaded successfully";
     } else if (requestedStatus === "delivered") {
       message = "Delivery marked as delivered successfully";
+    } else if (requestedStatus === "failed") {
+      message = "Delivery marked as failed successfully";
     } else if (uploadedReceiptPath) {
       message = "Signed receipt uploaded successfully";
     } else if (requestedStatus !== currentStatus) {

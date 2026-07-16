@@ -55,6 +55,8 @@ export default function DeliveryManagement() {
   const [collectionForms, setCollectionForms] = useState({});
 
   const [search, setSearch] = useState("");
+  const [failureModal, setFailureModal] = useState(null);
+  const [failureReasonInput, setFailureReasonInput] = useState("");
 
   const loadDeliveries = useCallback(async () => {
     setLoading(true);
@@ -185,6 +187,8 @@ export default function DeliveryManagement() {
     requireReceipt = false,
     allowReceiptOnly = false,
     successMessage,
+    failureReason,
+    onSuccess,
   }) => {
     const selectedFile = receiptFiles[delivery.id] || null;
     const hasExistingReceipt = Boolean(delivery.signed_receipt);
@@ -192,9 +196,12 @@ export default function DeliveryManagement() {
     const targetStatus = normalize(nextStatus || currentStatus);
     const collectionForm = getCollectionForm(delivery);
 
-    const collectionError = validateCollectionForm(delivery, collectionForm, {
-      requireAmount: targetStatus === "delivered",
-    });
+    const collectionError =
+      targetStatus === "failed"
+        ? ""
+        : validateCollectionForm(delivery, collectionForm, {
+            requireAmount: targetStatus === "delivered",
+          });
 
     if (collectionError) {
       setError(collectionError);
@@ -229,6 +236,10 @@ export default function DeliveryManagement() {
       fd.append("status", targetStatus);
       fd.append("notes", delivery.notes ?? "");
 
+      if (targetStatus === "failed") {
+        fd.append("failure_reason", failureReason || "");
+      }
+
       if (targetStatus === "delivered") {
         fd.append("collected_amount", collectionForm.amount || "");
         fd.append("payment_method", collectionForm.payment_method || "cash");
@@ -239,9 +250,11 @@ export default function DeliveryManagement() {
         fd.append("receipt", selectedFile);
       }
 
-      await api.patch(`/pos/deliveries/${delivery.id}/status`, fd, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      const { data } = await api.patch(
+        `/pos/deliveries/${delivery.id}/status`,
+        fd,
+        { headers: { "Content-Type": "multipart/form-data" } },
+      );
 
       setReceiptFiles((prev) => ({
         ...prev,
@@ -260,13 +273,16 @@ export default function DeliveryManagement() {
       }
 
       setSuccess(
-        successMessage ||
+        data?.message ||
+          successMessage ||
           (selectedFile
             ? "Delivery proof uploaded successfully."
             : "Delivery updated successfully."),
       );
 
       await loadDeliveries();
+
+      if (onSuccess) onSuccess();
     } catch (err) {
       console.error("Delivery update error:", err?.response?.data || err);
       setError(
@@ -702,6 +718,25 @@ export default function DeliveryManagement() {
                   </div>
                 )}
 
+                {canCompleteDelivery && (
+                  <div style={{ ...actionSection, marginTop: "8px" }}>
+                    <div style={buttonRow}>
+                      <button
+                        onClick={() => {
+                          setFailureModal(delivery);
+                          setFailureReasonInput("");
+                        }}
+                        disabled={savingId === delivery.id}
+                        style={btnUndo}
+                      >
+                        {savingId === delivery.id
+                          ? "Saving..."
+                          : "Mark as Failed"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {/* 👉 NEW: showSummary covers both Delivered and Completed statuses */}
                 {showSummary && (
                   <div style={actionSection}>
@@ -872,6 +907,141 @@ export default function DeliveryManagement() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {failureModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            padding: "16px",
+          }}
+          onClick={() => {
+            if (savingId !== failureModal.id) {
+              setFailureModal(null);
+              setFailureReasonInput("");
+            }
+          }}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "12px",
+              padding: "24px",
+              width: "100%",
+              maxWidth: "420px",
+              boxShadow: "0 20px 50px rgba(0,0,0,0.2)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                fontSize: "16px",
+                fontWeight: 700,
+                color: "#18181b",
+                marginBottom: "4px",
+              }}
+            >
+              Mark Delivery as Failed
+            </div>
+            <div
+              style={{ fontSize: "13px", color: "#71717a", marginBottom: "16px" }}
+            >
+              {failureModal.order_number || "—"}
+            </div>
+            <label
+              style={{
+                fontSize: "12px",
+                fontWeight: 600,
+                color: "#52525b",
+                display: "block",
+                marginBottom: "6px",
+              }}
+            >
+              Reason (required)
+            </label>
+            <textarea
+              value={failureReasonInput}
+              onChange={(e) => setFailureReasonInput(e.target.value)}
+              maxLength={500}
+              rows={4}
+              disabled={savingId === failureModal.id}
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                borderRadius: "8px",
+                border: "1px solid #e4e4e7",
+                fontSize: "13px",
+                fontFamily: "inherit",
+                resize: "vertical",
+                boxSizing: "border-box",
+              }}
+              placeholder="Explain why this delivery could not be completed..."
+            />
+            <div
+              style={{
+                fontSize: "11px",
+                color: "#a1a1aa",
+                marginTop: "4px",
+                textAlign: "right",
+              }}
+            >
+              {failureReasonInput.trim().length}/500
+            </div>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: "10px",
+                marginTop: "20px",
+              }}
+            >
+              <button
+                onClick={() => {
+                  setFailureModal(null);
+                  setFailureReasonInput("");
+                }}
+                disabled={savingId === failureModal.id}
+                style={btnSecondary}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const trimmedReason = failureReasonInput.trim();
+                  saveDeliveryUpdate({
+                    delivery: failureModal,
+                    nextStatus: "failed",
+                    failureReason: trimmedReason,
+                    onSuccess: () => {
+                      setFailureModal(null);
+                      setFailureReasonInput("");
+                    },
+                  });
+                }}
+                disabled={
+                  savingId === failureModal.id ||
+                  !failureReasonInput.trim() ||
+                  failureReasonInput.trim().length > 500
+                }
+                style={
+                  savingId === failureModal.id ||
+                  !failureReasonInput.trim() ||
+                  failureReasonInput.trim().length > 500
+                    ? btnDisabled
+                    : btnUndo
+                }
+              >
+                {savingId === failureModal.id ? "Saving..." : "Confirm Failure"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
