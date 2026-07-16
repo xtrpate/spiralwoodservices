@@ -6,6 +6,7 @@ const {
   requireStaffOrAdmin,
   requireIndoorStaffOrAdmin,
 } = require("../middleware/auth");
+const { logAction } = require("../middleware/auditLog");
 const posTasksController = require("../controllers/staff/pos.tasks");
 
 const allLoggedInStaffOrAdmin = [authenticate, requireStaffOrAdmin];
@@ -58,6 +59,7 @@ router.put("/:id/accept", indoorOnlyOrAdmin, posTasksController.acceptTask);
 router.put(
   "/:id/status",
   indoorOnlyOrAdmin,
+  logAction("update_project_task_status", "project_tasks"),
   posTasksController.updateTaskStatus,
 );
 

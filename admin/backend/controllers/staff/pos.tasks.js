@@ -550,6 +550,11 @@ exports.updateTaskStatus = async (req, res) => {
       }
     }
 
+    req.auditRecord = {
+      id: taskId,
+      old: { status: existing.status },
+      new: { status },
+    };
     res.json({ message: "Task status updated successfully." });
   } catch (err) {
     console.error("[pos.tasks PUT /:id/status]", err);
