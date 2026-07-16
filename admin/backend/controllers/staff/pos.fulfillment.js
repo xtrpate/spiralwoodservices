@@ -377,6 +377,21 @@ exports.createDelivery = async (req, res) => {
       delivery.signed_receipt = signUploadPath(delivery.signed_receipt);
     }
 
+    try {
+      await db.query(
+        `INSERT INTO notifications (user_id, type, title, message, is_read, channel, sent_at, created_at)
+         VALUES (?, ?, ?, ?, 0, 'system', NOW(), NOW())`,
+        [
+          driverId,
+          "assignment",
+          "New Delivery Assigned",
+          `You have been assigned a delivery for ${order.order_number}, scheduled for ${scheduledDate}.`,
+        ],
+      );
+    } catch (notificationError) {
+      console.error("[createDelivery rider notification]", notificationError);
+    }
+
     res.status(201).json({
       message: "Delivery scheduled successfully",
       delivery,
