@@ -638,29 +638,160 @@ exports.updateTask = async (req, res) => {
       return exports.updateTaskStatus(req, res);
     }
 
-    const nextOrderId =
-      order_id === "" ? null : (order_id ?? existing.order_id);
-    const nextBlueprintId =
-      blueprint_id === "" ? null : (blueprint_id ?? existing.blueprint_id);
-    const nextAssignedTo =
-      assigned_to === "" ? null : (assigned_to ?? existing.assigned_to);
+    const validStatuses = ["pending", "in_progress", "completed", "blocked"];
+    if (status !== undefined && !validStatuses.includes(status)) {
+      return res.status(400).json({ message: "Invalid status." });
+    }
 
-    if (nextAssignedTo) {
-      const assignee = await ensureIndoorAssignee(nextAssignedTo);
+    const parseStrictPositiveInt = (value) => {
+      if (typeof value === "number") {
+        return Number.isSafeInteger(value) && value > 0 ? value : null;
+      }
+      if (typeof value !== "string") return null;
+      const trimmed = value.trim();
+      if (!/^\d+$/.test(trimmed)) return null;
+      const parsed = Number(trimmed);
+      return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+    };
 
-      if (!assignee) {
-        return res.status(400).json({
-          message: "Only active indoor staff can be assigned to project tasks.",
-        });
+    const parseOptionalId = (value, existingValue) => {
+      if (value === undefined) return { value: existingValue, valid: true };
+      if (value === null || value === "") return { value: null, valid: true };
+      const parsed = parseStrictPositiveInt(value);
+      return parsed === null
+        ? { value: null, valid: false }
+        : { value: parsed, valid: true };
+    };
+
+    const nextAssignedTo = parseStrictPositiveInt(assigned_to);
+    if (!nextAssignedTo) {
+      return res.status(400).json({
+        message: "Assign To is required and must be a valid staff ID.",
+      });
+    }
+
+    const orderIdResult = parseOptionalId(order_id, existing.order_id);
+    if (!orderIdResult.valid) {
+      return res.status(400).json({ message: "Invalid order reference." });
+    }
+    const nextOrderId = orderIdResult.value;
+
+    const blueprintIdResult = parseOptionalId(
+      blueprint_id,
+      existing.blueprint_id,
+    );
+    if (!blueprintIdResult.valid) {
+      return res.status(400).json({ message: "Invalid blueprint reference." });
+    }
+    const nextBlueprintId = blueprintIdResult.value;
+
+    const PH_OFFSET_MS = 8 * 60 * 60 * 1000;
+    const parsePhilippineDateTimeLocal = (value) => {
+      if (typeof value !== "string") return undefined;
+      const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+      if (!match) return undefined;
+      const [, yStr, moStr, dStr, hStr, miStr] = match;
+      const y = Number(yStr),
+        mo = Number(moStr),
+        d = Number(dStr),
+        h = Number(hStr),
+        mi = Number(miStr);
+      const utcMs = Date.UTC(y, mo - 1, d, h, mi) - PH_OFFSET_MS;
+      const result = new Date(utcMs);
+      const check = new Date(utcMs + PH_OFFSET_MS);
+      if (
+        check.getUTCFullYear() !== y ||
+        check.getUTCMonth() !== mo - 1 ||
+        check.getUTCDate() !== d ||
+        check.getUTCHours() !== h ||
+        check.getUTCMinutes() !== mi
+      ) {
+        return undefined;
+      }
+      return result;
+    };
+
+    let nextDueDate;
+    if (due_date === undefined) {
+      nextDueDate = existing.due_date;
+    } else if (due_date === "" || due_date === null) {
+      nextDueDate = null;
+    } else {
+      nextDueDate = parsePhilippineDateTimeLocal(due_date);
+      if (nextDueDate === undefined) {
+        return res.status(400).json({ message: "Invalid due date." });
       }
     }
 
     const nextTaskRole = task_role ?? existing.task_role;
     const nextTitle = title ?? existing.title;
     const nextDescription = description ?? existing.description;
-    const nextDueDate =
-      due_date === "" ? null : (due_date ?? existing.due_date);
     const nextStatus = status ?? existing.status;
+
+    const existingDueMinute = existing.due_date
+      ? Math.floor(new Date(existing.due_date).getTime() / 60000)
+      : null;
+    const nextDueMinute = nextDueDate
+      ? Math.floor(nextDueDate.getTime() / 60000)
+      : null;
+
+    const orderIdChanged = existing.order_id !== nextOrderId;
+    const blueprintIdChanged = existing.blueprint_id !== nextBlueprintId;
+    const assignedToChanged = existing.assigned_to !== nextAssignedTo;
+    const taskRoleChanged = existing.task_role !== nextTaskRole;
+    const titleChanged = existing.title !== nextTitle;
+    const descriptionChanged =
+      (existing.description ?? "") !== (nextDescription ?? "");
+    const dueDateChanged = existingDueMinute !== nextDueMinute;
+    const statusChanged = existing.status !== nextStatus;
+
+    const anyFieldChanged =
+      orderIdChanged ||
+      blueprintIdChanged ||
+      assignedToChanged ||
+      taskRoleChanged ||
+      titleChanged ||
+      descriptionChanged ||
+      dueDateChanged ||
+      statusChanged;
+
+    if (!anyFieldChanged) {
+      return res.json({ message: "No changes were made." });
+    }
+
+    const descriptionForUpdate = descriptionChanged
+      ? nextDescription
+      : existing.description;
+    const dueDateForUpdate = dueDateChanged ? nextDueDate : existing.due_date;
+
+    const assignee = await ensureIndoorAssignee(nextAssignedTo);
+    if (!assignee) {
+      return res.status(400).json({
+        message: "Only active indoor staff can be assigned to project tasks.",
+      });
+    }
+
+    if (nextOrderId) {
+      const [[orderExists]] = await db.query(
+        `SELECT id FROM orders WHERE id = ? LIMIT 1`,
+        [nextOrderId],
+      );
+      if (!orderExists) {
+        return res.status(400).json({ message: "Linked order not found." });
+      }
+    }
+
+    if (nextBlueprintId) {
+      const [[blueprintExists]] = await db.query(
+        `SELECT id FROM blueprints WHERE id = ? LIMIT 1`,
+        [nextBlueprintId],
+      );
+      if (!blueprintExists) {
+        return res
+          .status(400)
+          .json({ message: "Linked blueprint not found." });
+      }
+    }
 
     if (existing.status === "completed" && nextStatus !== "completed") {
       return res.status(400).json({
@@ -668,15 +799,42 @@ exports.updateTask = async (req, res) => {
       });
     }
 
-    const sequenceError = await validateProductionSequence({
-      orderId: nextOrderId,
-      taskRole: nextTaskRole,
-      currentStatus: existing.status,
-      nextStatus: nextStatus,
-    });
+    const normalizedExistingRole = normalize(existing.task_role);
+    const normalizedNextRole = normalize(nextTaskRole);
+    const existingHasRequiredRole = REQUIRED_PRODUCTION_STEP_KEYS.includes(
+      normalizedExistingRole,
+    );
+    const nextHasRequiredRole = REQUIRED_PRODUCTION_STEP_KEYS.includes(
+      normalizedNextRole,
+    );
 
-    if (sequenceError) {
-      return res.status(400).json({ message: sequenceError });
+    if (nextHasRequiredRole && !nextOrderId) {
+      return res.status(400).json({
+        message: "A required production step must be linked to an order.",
+      });
+    }
+
+    if (
+      (orderIdChanged || taskRoleChanged) &&
+      (existingHasRequiredRole || nextHasRequiredRole)
+    ) {
+      return res.status(400).json({
+        message:
+          "Production workflow order and step role must be managed through the production assignment workflow.",
+      });
+    }
+
+    if (statusChanged) {
+      const sequenceError = await validateProductionSequence({
+        orderId: nextOrderId,
+        taskRole: nextTaskRole,
+        currentStatus: existing.status,
+        nextStatus,
+      });
+
+      if (sequenceError) {
+        return res.status(400).json({ message: sequenceError });
+      }
     }
 
     let completedAt = existing.completed_at;
@@ -687,32 +845,52 @@ exports.updateTask = async (req, res) => {
     }
 
     // ── FIXED: Switched to .query ──
-    await db.query(
+    const [result] = await db.query(
       `UPDATE project_tasks
        SET order_id = ?, blueprint_id = ?, assigned_to = ?, task_role = ?,
            title = ?, description = ?, due_date = ?, status = ?, completed_at = ?, updated_at = NOW()
-       WHERE id = ?`,
+       WHERE id = ?
+         AND order_id <=> ? AND blueprint_id <=> ? AND assigned_to <=> ?
+         AND CAST(task_role AS BINARY) <=> CAST(? AS BINARY)
+         AND CAST(title AS BINARY) <=> CAST(? AS BINARY)
+         AND CAST(description AS BINARY) <=> CAST(? AS BINARY)
+         AND due_date <=> ? AND status <=> ?`,
       [
-        nextOrderId ? parseInt(nextOrderId) : null,
-        nextBlueprintId ? parseInt(nextBlueprintId) : null,
-        nextAssignedTo ? parseInt(nextAssignedTo) : null,
+        nextOrderId,
+        nextBlueprintId,
+        nextAssignedTo,
         nextTaskRole,
         nextTitle,
-        nextDescription,
-        nextDueDate,
+        descriptionForUpdate,
+        dueDateForUpdate,
         nextStatus,
         completedAt,
         id,
+        existing.order_id,
+        existing.blueprint_id,
+        existing.assigned_to,
+        existing.task_role,
+        existing.title,
+        existing.description,
+        existing.due_date,
+        existing.status,
       ],
     );
 
-    if (String(existing.assigned_to || "") !== String(nextAssignedTo || "")) {
+    if (result.affectedRows !== 1) {
+      return res.status(409).json({
+        message:
+          "Task was changed before this update was completed. Refresh and try again.",
+      });
+    }
+
+    if (assignedToChanged) {
       // ── FIXED: Switched to .query ──
       await db.query(
         `INSERT INTO notifications (user_id, type, title, message, channel, sent_at)
          VALUES (?, 'assignment', 'Task Updated', ?, 'system', NOW())`,
         [
-          parseInt(nextAssignedTo),
+          nextAssignedTo,
           `A task has been assigned/updated: ${nextTitle}`,
         ],
       );
@@ -721,7 +899,7 @@ exports.updateTask = async (req, res) => {
     res.json({ message: "Task updated successfully." });
   } catch (err) {
     console.error("[pos.tasks PUT /:id]", err);
-    res.status(500).json({ message: "Server error.", error: err.message });
+    res.status(500).json({ message: "Server error." });
   }
 };
 

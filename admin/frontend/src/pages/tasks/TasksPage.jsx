@@ -118,13 +118,25 @@ export default function TasksPage() {
     setTarget(null);
     setModal("create");
   };
+  const toPhilippineDateTimeLocal = (isoString) => {
+    if (!isoString) return "";
+    const date = new Date(isoString);
+    if (Number.isNaN(date.getTime())) return "";
+    const ph = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+    const yyyy = ph.getUTCFullYear();
+    const mm = String(ph.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(ph.getUTCDate()).padStart(2, "0");
+    const hh = String(ph.getUTCHours()).padStart(2, "0");
+    const mi = String(ph.getUTCMinutes()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+  };
   const openEdit = (t) => {
     setForm({
       title: t.title,
       description: t.description || "",
       assigned_to: String(t.assigned_to || ""),
       task_role: t.task_role,
-      due_date: t.due_date ? t.due_date.slice(0, 16) : "",
+      due_date: toPhilippineDateTimeLocal(t.due_date),
       order_id: t.order_id ? String(t.order_id) : "",
       blueprint_id: t.blueprint_id ? String(t.blueprint_id) : "",
       status: t.status,
