@@ -267,71 +267,9 @@ exports.getTasks = async (req, res) => {
 
 /* ── Create/Assign Task ── */
 exports.createTask = async (req, res) => {
-  const {
-    order_id,
-    blueprint_id,
-    assigned_to,
-    task_role,
-    title,
-    description,
-    due_date,
-  } = req.body;
-
-  if (!assigned_to || !title) {
-    return res
-      .status(400)
-      .json({ message: "Assigned staff and task title are required." });
-  }
-
-  try {
-    const assignee = await ensureIndoorAssignee(assigned_to);
-
-    if (!assignee) {
-      return res.status(400).json({
-        message: "Only active indoor staff can be assigned to project tasks.",
-      });
-    }
-
-    if (order_id) {
-      // ── FIXED: Switched to .query ──
-      await db.query(
-        `UPDATE orders SET status = 'production' WHERE id = ? AND status = 'confirmed'`,
-        [parseInt(order_id)],
-      );
-    }
-
-    // ── FIXED: Switched to .query ──
-    const [result] = await db.query(
-      `INSERT INTO project_tasks 
-        (order_id, blueprint_id, assigned_to, assigned_by, task_role, title, description, due_date, status, is_read) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0)`,
-      [
-        order_id ? parseInt(order_id) : null,
-        blueprint_id ? parseInt(blueprint_id) : null,
-        parseInt(assigned_to),
-        parseInt(req.user.id),
-        task_role || "Other",
-        title,
-        description || "",
-        due_date || null,
-      ],
-    );
-
-    // ── FIXED: Switched to .query ──
-    await db.query(
-      `INSERT INTO notifications (user_id, type, title, message, channel, sent_at) 
-       VALUES (?, 'assignment', 'New Task Assigned', ?, 'system', NOW())`,
-      [parseInt(assigned_to), `You have been assigned a new task: ${title}`],
-    );
-
-    res.status(201).json({
-      message: "Task assigned successfully.",
-      task_id: result.insertId,
-    });
-  } catch (err) {
-    console.error("[pos.tasks POST /]", err);
-    res.status(500).json({ message: "Server error.", error: err.message });
-  }
+  return res.status(400).json({
+    message: "Production tasks must be created through Orders → Blueprint.",
+  });
 };
 
 /* ── Accept Task ── */
@@ -909,18 +847,51 @@ exports.deleteTask = async (req, res) => {
       return res.status(403).json({ message: "Only admins can delete tasks." });
     }
 
+    const parseStrictPositiveInt = (value) => {
+      if (typeof value === "number") {
+        return Number.isSafeInteger(value) && value > 0 ? value : null;
+      }
+      if (typeof value !== "string") return null;
+      const trimmed = value.trim();
+      if (!/^\d+$/.test(trimmed)) return null;
+      const parsed = Number(trimmed);
+      return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+    };
+
+    const taskId = parseStrictPositiveInt(req.params.id);
+    if (!taskId) {
+      return res.status(400).json({ message: "Invalid task ID." });
+    }
+
+    const [[task]] = await db.query(
+      `SELECT task_role FROM project_tasks WHERE id = ?`,
+      [taskId],
+    );
+
+    if (!task) {
+      return res.status(404).json({ message: "Task not found." });
+    }
+
+    if (REQUIRED_PRODUCTION_STEP_KEYS.includes(normalize(task.task_role))) {
+      return res.status(400).json({
+        message: "Required production tasks cannot be deleted.",
+      });
+    }
+
     // ── FIXED: Switched to .query and parsed ID ──
     const [result] = await db.query(`DELETE FROM project_tasks WHERE id = ?`, [
-      parseInt(req.params.id),
+      taskId,
     ]);
 
-    if (!result.affectedRows) {
-      return res.status(404).json({ message: "Task not found." });
+    if (result.affectedRows !== 1) {
+      return res.status(404).json({
+        message: "Task was already deleted or changed. Refresh and try again.",
+      });
     }
 
     res.json({ message: "Task deleted successfully." });
   } catch (err) {
     console.error("[pos.tasks DELETE /:id]", err);
-    res.status(500).json({ message: "Server error.", error: err.message });
+    res.status(500).json({ message: "Server error." });
   }
 };

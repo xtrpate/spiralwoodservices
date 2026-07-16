@@ -1,5 +1,6 @@
 // src/pages/tasks/TasksPage.jsx
 import React, { useEffect, useState, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import api from "../../services/api";
 import toast from "react-hot-toast";
 import useAuthStore from "../../store/authStore";
@@ -9,6 +10,14 @@ const PRIORITY_ROLES = [
   "Installer",
   "Quality Inspector",
   "Other",
+];
+
+const REQUIRED_PRODUCTION_ROLES = [
+  "Cutting Machine",
+  "Edge Banding",
+  "Horizontal Drilling",
+  "Retouching",
+  "Packing",
 ];
 
 const STATUS_META = {
@@ -58,6 +67,7 @@ const BLANK = {
 export default function TasksPage() {
   const { user: me } = useAuthStore();
   const isAdmin = me?.role === "admin";
+  const navigate = useNavigate();
 
   const [tasks, setTasks] = useState([]);
   const [staff, setStaff] = useState([]);
@@ -162,13 +172,15 @@ export default function TasksPage() {
         await api.post("/tasks", payload);
         toast.success("Task assigned! Staff has been notified.");
       } else {
-        await api.put(`/tasks/${target.id}`, payload);
-        toast.success("Task updated.");
+        const { data } = await api.put(`/tasks/${target.id}`, payload);
+        toast.success(data?.message || "Task updated.");
       }
       setModal(null);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.message || "Failed to save task.");
+      if (err.response?.status === 404) {
+        toast.error(err.response?.data?.message || "Task not found.");
+      }
     } finally {
       setSaving(false);
     }
@@ -190,8 +202,10 @@ export default function TasksPage() {
       await api.delete(`/tasks/${taskId}`);
       toast.success("Task deleted.");
       load();
-    } catch {
-      toast.error("Failed to delete task.");
+    } catch (err) {
+      if (err.response?.status === 404) {
+        toast.error(err.response?.data?.message || "Task not found.");
+      }
     }
   };
 
@@ -412,6 +426,9 @@ export default function TasksPage() {
     }),
   };
 
+  const isEditingRequiredProductionTask =
+    modal === "edit" && REQUIRED_PRODUCTION_ROLES.includes(target?.task_role);
+
   return (
     <div style={S.page}>
       {/* ── Header ─────────────────────────────────────────────────────────── */}
@@ -453,11 +470,6 @@ export default function TasksPage() {
               </span>
             )}
           </button>
-          {isAdmin && (
-            <button style={{ ...S.btn, ...S.btnPrim }} onClick={openCreate}>
-              + Assign Task
-            </button>
-          )}
         </div>
       </div>
 
@@ -502,7 +514,7 @@ export default function TasksPage() {
           onChange={(e) => setFilterRole(e.target.value)}
         >
           <option value="all">All Roles</option>
-          {PRIORITY_ROLES.map((r) => (
+          {REQUIRED_PRODUCTION_ROLES.map((r) => (
             <option key={r} value={r}>
               {r}
             </option>
@@ -674,14 +686,26 @@ export default function TasksPage() {
                       >
                         Edit
                       </button>
-                      <button
-                        style={{ ...S.btn, ...S.btnRed, padding: "7px 14px" }}
-                        onClick={() => handleDelete(t.id)}
-                      >
-                        Delete
-                      </button>
+                      {!REQUIRED_PRODUCTION_ROLES.includes(t.task_role) && (
+                        <button
+                          style={{ ...S.btn, ...S.btnRed, padding: "7px 14px" }}
+                          onClick={() => handleDelete(t.id)}
+                        >
+                          Delete
+                        </button>
+                      )}
                     </>
                   )}
+                  {isAdmin &&
+                    REQUIRED_PRODUCTION_ROLES.includes(t.task_role) &&
+                    t.order_id && (
+                      <button
+                        style={{ ...S.btn, ...S.btnGray, padding: "7px 14px" }}
+                        onClick={() => navigate(`/admin/orders/${t.order_id}`)}
+                      >
+                        Open Order
+                      </button>
+                    )}
                   {!isAdmin && t.status !== "completed" && (
                     <select
                       style={{
@@ -762,19 +786,25 @@ export default function TasksPage() {
                 </div>
                 <div style={S.mRow}>
                   <label style={S.label}>Task Role</label>
-                  <select
-                    style={S.mInput}
-                    value={form.task_role}
-                    onChange={(e) =>
-                      setForm((p) => ({ ...p, task_role: e.target.value }))
-                    }
-                  >
-                    {PRIORITY_ROLES.map((r) => (
-                      <option key={r} value={r}>
-                        {r}
-                      </option>
-                    ))}
-                  </select>
+                  {isEditingRequiredProductionTask ? (
+                    <select style={S.mInput} value={form.task_role} disabled>
+                      <option value={form.task_role}>{form.task_role}</option>
+                    </select>
+                  ) : (
+                    <select
+                      style={S.mInput}
+                      value={form.task_role}
+                      onChange={(e) =>
+                        setForm((p) => ({ ...p, task_role: e.target.value }))
+                      }
+                    >
+                      {PRIORITY_ROLES.map((r) => (
+                        <option key={r} value={r}>
+                          {r}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </div>
                 <div style={S.mRow}>
                   <label style={S.label}>Due Date & Time</label>
@@ -808,20 +838,35 @@ export default function TasksPage() {
               <div style={S.half}>
                 <div style={S.mRow}>
                   <label style={S.label}>Link to Order (optional)</label>
-                  <select
-                    style={S.mInput}
-                    value={form.order_id}
-                    onChange={(e) =>
-                      setForm((p) => ({ ...p, order_id: e.target.value }))
-                    }
-                  >
-                    <option value="">No linked order</option>
-                    {orders.map((o) => (
-                      <option key={o.id} value={o.id}>
-                        #{o.order_number} ({o.status})
+                  {isEditingRequiredProductionTask ? (
+                    <select style={S.mInput} value={form.order_id} disabled>
+                      <option value={form.order_id}>
+                        {target?.order_number
+                          ? `#${target.order_number}`
+                          : "Linked order"}
                       </option>
-                    ))}
-                  </select>
+                    </select>
+                  ) : (
+                    <select
+                      style={S.mInput}
+                      value={form.order_id}
+                      onChange={(e) =>
+                        setForm((p) => ({ ...p, order_id: e.target.value }))
+                      }
+                    >
+                      <option value="">No linked order</option>
+                      {orders.map((o) => (
+                        <option key={o.id} value={o.id}>
+                          #{o.order_number} ({o.status})
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  {isEditingRequiredProductionTask && (
+                    <div style={{ fontSize: 11, color: "#71717a", marginTop: 4 }}>
+                      Production step and order are managed through Orders → Blueprint.
+                    </div>
+                  )}
                 </div>
               </div>
               <div
