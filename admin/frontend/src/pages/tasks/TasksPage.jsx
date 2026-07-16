@@ -680,12 +680,14 @@ export default function TasksPage() {
                   </button>
                   {isAdmin && (
                     <>
-                      <button
-                        style={{ ...S.btn, ...S.btnGray, padding: "7px 14px" }}
-                        onClick={() => openEdit(t)}
-                      >
-                        Edit
-                      </button>
+                      {!REQUIRED_PRODUCTION_ROLES.includes(t.task_role) && (
+                        <button
+                          style={{ ...S.btn, ...S.btnGray, padding: "7px 14px" }}
+                          onClick={() => openEdit(t)}
+                        >
+                          Edit
+                        </button>
+                      )}
                       {!REQUIRED_PRODUCTION_ROLES.includes(t.task_role) && (
                         <button
                           style={{ ...S.btn, ...S.btnRed, padding: "7px 14px" }}

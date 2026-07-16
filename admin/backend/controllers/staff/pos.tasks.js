@@ -576,6 +576,13 @@ exports.updateTask = async (req, res) => {
       return exports.updateTaskStatus(req, res);
     }
 
+    if (REQUIRED_PRODUCTION_STEP_KEYS.includes(normalize(existing.task_role))) {
+      return res.status(400).json({
+        message:
+          "Production tasks must be managed through Orders → Blueprint and the Production Work Queue.",
+      });
+    }
+
     const validStatuses = ["pending", "in_progress", "completed", "blocked"];
     if (status !== undefined && !validStatuses.includes(status)) {
       return res.status(400).json({ message: "Invalid status." });
