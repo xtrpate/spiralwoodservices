@@ -493,6 +493,8 @@ exports.updateTaskStatus = async (req, res) => {
       );
     }
 
+    let becameProductionReady = false;
+
     if (existing.order_id && existing.assigned_by) {
       // ── FIXED: Switched to .query ──
       const [packetRows] = await db.query(
@@ -547,9 +549,36 @@ exports.updateTaskStatus = async (req, res) => {
             `${req.user.name || "A staff member"} completed the full production workflow for Order #${existing.order_id}. The order is now ready for shipping review.`,
           ],
         );
+        becameProductionReady = true;
       }
     }
 
+    if (becameProductionReady) {
+      try {
+        await db.query(
+          `INSERT INTO audit_logs
+             (user_id, action, table_name, record_id, old_values, new_values, ip_address)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
+            req.user.id,
+            "mark_production_ready_for_shipping",
+            "orders",
+            parseInt(existing.order_id),
+            JSON.stringify({ ready_for_shipping: false }),
+            JSON.stringify({
+              ready_for_shipping: true,
+              completed_required_steps: REQUIRED_PRODUCTION_STEP_KEYS.length,
+            }),
+            req.ip || null,
+          ],
+        );
+      } catch (auditErr) {
+        console.error(
+          "[pos.tasks] readiness audit insert failed:",
+          auditErr.message,
+        );
+      }
+    }
     req.auditRecord = {
       id: taskId,
       old: { status: existing.status },
