@@ -2041,13 +2041,14 @@ exports.assignStaff = async (req, res) => {
       });
     }
 
+    const createdTaskIds = [];
     for (const stepLabel of BLUEPRINT_PRODUCTION_TASK_ROLE_OPTIONS) {
       const title = `${order.order_number || `Order #${orderId}`} — ${stepLabel}`;
       const description = note
         ? `Production step: ${stepLabel}\n\nAdmin production note: ${note}`
         : `Production step: ${stepLabel}`;
 
-      await conn.query(
+      const [taskResult] = await conn.query(
         `INSERT INTO project_tasks
           (
             order_id,
@@ -2073,6 +2074,7 @@ exports.assignStaff = async (req, res) => {
           due_date,
         ],
       );
+      createdTaskIds.push(taskResult.insertId);
     }
 
     await conn.query(
@@ -2085,7 +2087,10 @@ exports.assignStaff = async (req, res) => {
       ],
     );
 
-    if (normalize(order.status) === "contract_released") {
+    const orderStatusChanged =
+      normalize(order.status) === "contract_released";
+
+    if (orderStatusChanged) {
       await conn.query(
         `UPDATE orders
          SET status = 'production'
@@ -2096,6 +2101,18 @@ exports.assignStaff = async (req, res) => {
 
     await conn.commit();
 
+    req.auditRecord = {
+      id: orderId,
+      old: orderStatusChanged
+        ? { status: normalize(order.status) }
+        : null,
+      new: {
+        assigned_staff_id: parseInt(staff_id),
+        task_ids: createdTaskIds,
+        task_roles: BLUEPRINT_PRODUCTION_TASK_ROLE_OPTIONS,
+        ...(orderStatusChanged ? { status: "production" } : {}),
+      },
+    };
     res.json({
       message:
         "Indoor staff assigned to the full production workflow successfully.",

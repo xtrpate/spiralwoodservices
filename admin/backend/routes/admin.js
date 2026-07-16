@@ -300,7 +300,12 @@ router.get(
   adminStaff,
   orders.getAssignableStaff,
 );
-router.patch("/orders/:id/assign-staff", adminOnly, orders.assignStaff);
+router.patch(
+  "/orders/:id/assign-staff",
+  adminOnly,
+  logAction("assign_production_staff", "orders"),
+  orders.assignStaff,
+);
 router.patch(
   "/orders/:id/tasks/:taskId/status",
   adminOnly,
