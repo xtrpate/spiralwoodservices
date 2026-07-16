@@ -2126,6 +2126,358 @@ exports.assignStaff = async (req, res) => {
   }
 };
 
+/**
+ * PATCH /orders/:id/reassign-staff
+ * Transfers pending production tasks to a new primary indoor staff member.
+ * Rejects the whole operation if any task is in_progress or blocked.
+ * Completed tasks and their history are never touched. Operates per
+ * eligible task row rather than assuming a single existing assignee, so it
+ * also correctly resolves a packet whose pending tasks are currently split
+ * across more than one assignee.
+ */
+exports.reassignStaff = async (req, res) => {
+  const parseStrictPositiveInt = (value) => {
+    if (typeof value === "number") {
+      return Number.isSafeInteger(value) && value > 0 ? value : null;
+    }
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    if (!/^\d+$/.test(trimmed)) return null;
+    const parsed = Number(trimmed);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+  };
+
+  const orderId = parseStrictPositiveInt(req.params.id);
+  const newStaffId = parseStrictPositiveInt(req.body?.staff_id);
+
+  if (!orderId) {
+    return res.status(400).json({ message: "Invalid order ID." });
+  }
+  if (!newStaffId) {
+    return res
+      .status(400)
+      .json({ message: "A valid staff member is required." });
+  }
+
+  let conn = null;
+  let transactionActive = false;
+
+  try {
+    conn = await pool.getConnection();
+    await conn.beginTransaction();
+    transactionActive = true;
+
+    const [[order]] = await conn.query(
+      `SELECT id, order_number, status, order_type, blueprint_id
+       FROM orders
+       WHERE id = ?
+       FOR UPDATE`,
+      [orderId],
+    );
+
+    if (!order) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(404).json({ message: "Order not found." });
+    }
+
+    if (normalize(order.order_type) !== "blueprint") {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message: "This order is not a blueprint production order.",
+      });
+    }
+
+    if (!order.blueprint_id) {
+      await conn.rollback();
+      transactionActive = false;
+      return res
+        .status(400)
+        .json({ message: "This order is not linked to a blueprint." });
+    }
+
+    if (!["contract_released", "production"].includes(normalize(order.status))) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message:
+          "Staff reassignment is only allowed after contract release or during production.",
+      });
+    }
+
+    const [ownerRows] = await conn.query(
+      `SELECT id FROM orders WHERE blueprint_id = ?`,
+      [order.blueprint_id],
+    );
+    if (ownerRows.length > 1) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message:
+          "This order's blueprint is referenced by more than one order. Manual review required.",
+      });
+    }
+
+    const [[blueprint]] = await conn.query(
+      `SELECT id, is_deleted FROM blueprints WHERE id = ? FOR UPDATE`,
+      [order.blueprint_id],
+    );
+    if (!blueprint || blueprint.is_deleted) {
+      await conn.rollback();
+      transactionActive = false;
+      return res
+        .status(400)
+        .json({ message: "This order's linked blueprint no longer exists." });
+    }
+
+    const blueprintId = blueprint.id;
+
+    const [[newStaff]] = await conn.query(
+      `SELECT id, name, role, staff_type, is_active
+       FROM users
+       WHERE id = ? AND role = 'staff' AND staff_type = 'indoor'
+       FOR UPDATE`,
+      [newStaffId],
+    );
+
+    if (!newStaff || !newStaff.is_active) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message: "Only active indoor staff can be assigned to project tasks.",
+      });
+    }
+
+    const [packet] = await conn.query(
+      `SELECT id, task_role, status, assigned_to, assigned_by, order_id, blueprint_id
+       FROM project_tasks
+       WHERE order_id = ?
+       ORDER BY id
+       FOR UPDATE`,
+      [orderId],
+    );
+
+    const mismatchedRow = packet.find(
+      (row) => row.order_id !== orderId || row.blueprint_id !== blueprintId,
+    );
+    if (mismatchedRow) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message:
+          "This order's production packet references an unexpected order or blueprint.",
+      });
+    }
+
+    const rolesByKey = new Map();
+    for (const row of packet) {
+      const key = normalizeTaskRole(row.task_role);
+      if (!REQUIRED_BLUEPRINT_TASK_ROLES.includes(key)) continue;
+      if (rolesByKey.has(key)) {
+        await conn.rollback();
+        transactionActive = false;
+        return res.status(400).json({
+          message:
+            "This order's production packet has a duplicate step and cannot be reassigned automatically.",
+        });
+      }
+      rolesByKey.set(key, row);
+    }
+
+    const missingRoles = REQUIRED_BLUEPRINT_TASK_ROLES.filter(
+      (key) => !rolesByKey.has(key),
+    );
+
+    if (packet.length !== 5 || missingRoles.length > 0) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message:
+          "This order does not have a complete five-step production packet.",
+      });
+    }
+
+    const SUPPORTED_TASK_STATUSES = ["pending", "in_progress", "blocked", "completed"];
+    const invalidStatusRow = packet.find(
+      (row) => !SUPPORTED_TASK_STATUSES.includes(normalize(row.status)),
+    );
+    if (invalidStatusRow) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message:
+          "This order's production packet contains an unsupported task status.",
+      });
+    }
+
+    const blockingRow = packet.find((row) =>
+      ["in_progress", "blocked"].includes(normalize(row.status)),
+    );
+    if (blockingRow) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message:
+          "Active or blocked production steps must be resolved before staff can be reassigned.",
+      });
+    }
+
+    const allCompleted = packet.every(
+      (row) => normalize(row.status) === "completed",
+    );
+    if (allCompleted) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(400).json({
+        message:
+          "All production steps are already completed. There is nothing to reassign.",
+      });
+    }
+
+    const eligibleRows = packet.filter(
+      (row) =>
+        normalize(row.status) === "pending" && row.assigned_to !== newStaffId,
+    );
+
+    if (eligibleRows.length === 0) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(200).json({
+        message:
+          "The selected staff member is already assigned to all remaining pending production steps.",
+      });
+    }
+
+    let totalAffected = 0;
+    for (const row of eligibleRows) {
+      const [result] = await conn.query(
+        `UPDATE project_tasks
+         SET assigned_to = ?, assigned_by = ?, accepted_at = NULL, updated_at = NOW()
+         WHERE id = ? AND status = 'pending' AND assigned_to = ?`,
+        [newStaffId, req.user.id, row.id, row.assigned_to],
+      );
+      totalAffected += result.affectedRows;
+    }
+
+    if (totalAffected !== eligibleRows.length) {
+      await conn.rollback();
+      transactionActive = false;
+      return res.status(409).json({
+        message:
+          "Production tasks changed before this reassignment was completed. Refresh and try again.",
+      });
+    }
+
+    const distinctPreviousStaffIds = [
+      ...new Set(packet.map((row) => row.assigned_to).filter(Boolean)),
+    ];
+
+    let staffNameById = new Map();
+    if (distinctPreviousStaffIds.length > 0) {
+      const placeholders = distinctPreviousStaffIds.map(() => "?").join(", ");
+      const [nameRows] = await conn.query(
+        `SELECT id, name FROM users WHERE id IN (${placeholders})`,
+        distinctPreviousStaffIds,
+      );
+      staffNameById = new Map(nameRows.map((row) => [row.id, row.name]));
+    }
+
+    await conn.query(
+      `INSERT INTO notifications (user_id, type, title, message, channel, sent_at)
+       VALUES (?, 'assignment', 'Production Steps Reassigned to You', ?, 'system', NOW())`,
+      [
+        newStaffId,
+        `You have been assigned ${eligibleRows.length} remaining production step(s) for ${order.order_number || `Order #${orderId}`}.`,
+      ],
+    );
+
+    const lostByStaff = new Map();
+    for (const row of eligibleRows) {
+      if (!row.assigned_to) continue;
+      if (!lostByStaff.has(row.assigned_to)) lostByStaff.set(row.assigned_to, []);
+      lostByStaff.get(row.assigned_to).push(row.task_role);
+    }
+
+    for (const [oldStaffId, roles] of lostByStaff.entries()) {
+      await conn.query(
+        `INSERT INTO notifications (user_id, type, title, message, channel, sent_at)
+         VALUES (?, 'assignment', 'Reassigned Off Production Steps', ?, 'system', NOW())`,
+        [
+          oldStaffId,
+          `You have been reassigned off ${roles.length} pending production step(s) for ${order.order_number || `Order #${orderId}`}. Your completed work remains on record.`,
+        ],
+      );
+    }
+
+    const previousAssignments = eligibleRows.map((row) => ({
+      task_id: row.id,
+      task_role: getTaskRoleLabel(row.task_role),
+      original_status: row.status,
+      previous_staff_id: row.assigned_to,
+      previous_staff_name: staffNameById.get(row.assigned_to) || null,
+      previous_assigned_by: row.assigned_by,
+    }));
+
+    const completedTasksPreserved = packet
+      .filter((row) => normalize(row.status) === "completed")
+      .map((row) => ({
+        task_id: row.id,
+        task_role: getTaskRoleLabel(row.task_role),
+        status: row.status,
+        assigned_staff_id: row.assigned_to,
+        assigned_staff_name: staffNameById.get(row.assigned_to) || null,
+      }));
+
+    const auditRecord = {
+      id: orderId,
+      old: {
+        blueprint_id: blueprintId,
+        previous_assignments: previousAssignments,
+      },
+      new: {
+        blueprint_id: blueprintId,
+        new_staff_id: newStaffId,
+        new_staff_name: newStaff.name || null,
+        new_assigned_by: req.user.id,
+        transferred_task_ids: eligibleRows.map((row) => row.id),
+        transferred_task_roles: eligibleRows.map((row) =>
+          getTaskRoleLabel(row.task_role),
+        ),
+        transferred_task_original_statuses: eligibleRows.map((row) => row.status),
+        completed_tasks_preserved: completedTasksPreserved,
+      },
+    };
+
+    const responseBody = {
+      message: `${eligibleRows.length} production step(s) reassigned successfully.`,
+      transferred_task_ids: eligibleRows.map((row) => row.id),
+      preserved_completed_task_ids: completedTasksPreserved.map((t) => t.task_id),
+    };
+
+    await conn.commit();
+    transactionActive = false;
+
+    req.auditRecord = auditRecord;
+    return res.json(responseBody);
+  } catch (err) {
+    if (conn && transactionActive) {
+      try {
+        await conn.rollback();
+      } catch (rollbackErr) {
+        console.error(
+          "[orders.reassignStaff] rollback failed:",
+          rollbackErr.message,
+        );
+      }
+      transactionActive = false;
+    }
+    return res.status(500).json({ message: "Server error." });
+  } finally {
+    if (conn) conn.release();
+  }
+};
+
 // ── Helper: mirrors the production-step sequence rules already enforced in
 // controllers/staff/pos.tasks.js (validateProductionSequence), reusing the
 // task-role constants/normalizers already defined above in this file. ──

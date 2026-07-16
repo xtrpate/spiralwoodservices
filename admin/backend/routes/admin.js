@@ -307,6 +307,12 @@ router.patch(
   orders.assignStaff,
 );
 router.patch(
+  "/orders/:id/reassign-staff",
+  adminOnly,
+  logAction("reassign_production_staff", "orders"),
+  orders.reassignStaff,
+);
+router.patch(
   "/orders/:id/tasks/:taskId/status",
   adminOnly,
   logAction("update_project_task_status", "project_tasks"),

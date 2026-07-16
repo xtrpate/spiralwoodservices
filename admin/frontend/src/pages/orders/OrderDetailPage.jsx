@@ -425,6 +425,11 @@ export default function OrderDetailPage() {
   const [assignableStaff, setAssignableStaff] = useState([]);
   const [loadingAssignable, setLoadingAssignable] = useState(false);
   const [assigning, setAssigning] = useState(false);
+  const [reassignModal, setReassignModal] = useState(false);
+  const [reassignableStaff, setReassignableStaff] = useState([]);
+  const [loadingReassignable, setLoadingReassignable] = useState(false);
+  const [reassigning, setReassigning] = useState(false);
+  const [reassignStaffId, setReassignStaffId] = useState("");
   const [updatingTaskId, setUpdatingTaskId] = useState(null);
   const [assignmentBlueprintId, setAssignmentBlueprintId] = useState(null);
   const [assignForm, setAssignForm] = useState({
@@ -765,6 +770,45 @@ export default function OrderDetailPage() {
     }
   };
 
+  const openReassignModal = async () => {
+    setLoadingReassignable(true);
+    try {
+      const { data } = await api.get(`/orders/${id}/assignable-staff`);
+      setReassignableStaff(Array.isArray(data?.staff) ? data.staff : []);
+      setReassignStaffId("");
+      setReassignModal(true);
+    } catch (err) {
+      if (err.response?.status === 404) {
+        toast.error(err.response?.data?.message || "Order not found.");
+      }
+    } finally {
+      setLoadingReassignable(false);
+    }
+  };
+
+  const handleReassignStaff = async () => {
+    if (!reassignStaffId) {
+      toast.error("Please select a staff member.");
+      return;
+    }
+
+    setReassigning(true);
+    try {
+      const { data } = await api.patch(`/orders/${id}/reassign-staff`, {
+        staff_id: Number(reassignStaffId),
+      });
+      toast.success(data?.message || "Production staff reassigned successfully.");
+      setReassignModal(false);
+      load();
+    } catch (err) {
+      if (err.response?.status === 404) {
+        toast.error(err.response?.data?.message || "Order not found.");
+      }
+    } finally {
+      setReassigning(false);
+    }
+  };
+
   const handleTaskStatusUpdate = async (taskId, nextStatus) => {
     setUpdatingTaskId(taskId);
 
@@ -850,6 +894,23 @@ export default function OrderDetailPage() {
 
   const allBlueprintTasksCompleted =
     incompleteRequiredBlueprintTaskRoles.length === 0;
+
+  const hasInProgressOrBlockedTask = blueprintTasks.some((task) =>
+    ["in_progress", "blocked"].includes(normalize(task?.status)),
+  );
+  const pendingCountByStaffId = blueprintTasks.reduce((acc, task) => {
+    if (normalize(task?.status) === "pending" && task?.assigned_to) {
+      acc[task.assigned_to] = (acc[task.assigned_to] || 0) + 1;
+    }
+    return acc;
+  }, {});
+  const transferPreviewCount = reassignStaffId
+    ? blueprintTasks.filter(
+        (task) =>
+          normalize(task?.status) === "pending" &&
+          String(task?.assigned_to || "") !== String(reassignStaffId),
+      ).length
+    : 0;
 
   const isDeliveryPhaseOrDone = [
     "shipping",
@@ -2362,10 +2423,26 @@ export default function OrderDetailPage() {
 
               {canAssignBlueprintStaff && hasBlueprintTasks && (
                 <div style={{ marginTop: 12 }}>
-                  <span style={mutedBadge}>
-                    Primary indoor staff already assigned for this production
-                    order.
-                  </span>
+                  {allBlueprintTasksCompleted ? (
+                    <span style={mutedBadge}>
+                      All production steps for this order are completed.
+                    </span>
+                  ) : (
+                    <button
+                      onClick={openReassignModal}
+                      disabled={loadingReassignable}
+                      style={{
+                        ...btnPrimary,
+                        opacity: loadingReassignable ? 0.75 : 1,
+                        cursor: loadingReassignable ? "not-allowed" : "pointer",
+                      }}
+                      title="Reassign primary indoor staff"
+                    >
+                      {loadingReassignable
+                        ? "Loading Staff..."
+                        : "Reassign Production Staff"}
+                    </button>
+                  )}
                 </div>
               )}
             </Section>
@@ -2785,6 +2862,89 @@ export default function OrderDetailPage() {
                 style={btnPrimary}
               >
                 {assigning ? "Assigning..." : "Assign Indoor Staff"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {reassignModal && (
+        <div style={overlay}>
+          <div style={{ ...modalBox, width: 540 }}>
+            <div style={modalHeader}>
+              <div>
+                <h3 style={modalTitle}>Reassign Production Staff</h3>
+                <p style={modalSubtitle}>
+                  Order #{String(order.id).padStart(5, "0")}
+                </p>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 8 }}>
+              {blueprintTasks.map((t) => (
+                <div
+                  key={t.id}
+                  style={{ fontSize: 13, color: "#52525b", marginBottom: 4 }}
+                >
+                  {t.task_role}: <strong>{t.status}</strong>
+                  {t.assigned_to_name ? ` — ${t.assigned_to_name}` : ""}
+                </div>
+              ))}
+            </div>
+
+            {hasInProgressOrBlockedTask && (
+              <div style={{ ...alertWarning, marginTop: 16 }}>
+                Active or blocked production steps must be resolved before
+                staff can be reassigned.
+              </div>
+            )}
+
+            <div style={{ marginTop: 16 }}>
+              <label style={labelSm}>New Primary Indoor Staff</label>
+              <select
+                value={reassignStaffId}
+                onChange={(e) => setReassignStaffId(e.target.value)}
+                style={inputFull}
+                disabled={hasInProgressOrBlockedTask}
+              >
+                <option value="">— Select Staff —</option>
+                {reassignableStaff.map((staff) => {
+                  const pending = pendingCountByStaffId[staff.id] || 0;
+                  return (
+                    <option key={staff.id} value={staff.id}>
+                      {staff.name}
+                      {pending > 0
+                        ? ` — owns ${pending} pending step${pending === 1 ? "" : "s"}`
+                        : ""}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+
+            {reassignStaffId && (
+              <div style={{ marginTop: 8, fontSize: 12, color: "#52525b" }}>
+                {transferPreviewCount > 0
+                  ? `${transferPreviewCount} pending step${transferPreviewCount === 1 ? "" : "s"} will transfer to this staff member.`
+                  : "This staff member already owns every remaining pending step. Submitting will make no changes."}
+              </div>
+            )}
+
+            <div style={{ marginTop: 12, fontSize: 12, color: "#71717a" }}>
+              Completed steps remain attributed to their original staff
+              member. Due dates are unchanged.
+            </div>
+
+            <div style={modalActions}>
+              <button onClick={() => setReassignModal(false)} style={btnGhost}>
+                Cancel
+              </button>
+              <button
+                onClick={handleReassignStaff}
+                disabled={reassigning || hasInProgressOrBlockedTask || !reassignStaffId}
+                style={btnPrimary}
+              >
+                {reassigning ? "Reassigning..." : "Reassign Staff"}
               </button>
             </div>
           </div>
