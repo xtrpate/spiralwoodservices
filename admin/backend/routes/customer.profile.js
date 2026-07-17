@@ -111,6 +111,7 @@ router.post(
   "/verify-password-change",
   authenticate,
   requireCustomer,
+  logAction("update_customer_password", "users"),
   profileController.verifyPasswordChange,
 );
 

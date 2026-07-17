@@ -419,10 +419,23 @@ exports.verifyPasswordChange = async (req, res) => {
 
     const hashed = await bcrypt.hash(new_password, 12);
     // ── FIXED: Switched to .query ──
-    await db.query(
+    const [updateResult] = await db.query(
       "UPDATE users SET password=?, otp_code=NULL, otp_expires=NULL WHERE id=?",
       [hashed, req.user.id],
     );
+
+    if (updateResult?.affectedRows === 1) {
+      req.auditRecord = {
+        id: req.user.id,
+        old: { password_configured: true },
+        new: {
+          password_credential_updated: true,
+          password_configured: true,
+          changed_fields: ["password"],
+        },
+      };
+    }
+
     res.json({ message: "Password changed successfully." });
   } catch (err) {
     console.error("[profile/verify-password-change]", err);
