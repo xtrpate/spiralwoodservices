@@ -298,10 +298,32 @@ exports.updatePhone = async (req, res) => {
   }
 
   try {
-    await db.query("UPDATE users SET phone=? WHERE id=?", [
-      phone.trim(),
+    const [[existingUser]] = await db.query(
+      "SELECT phone FROM users WHERE id = ?",
+      [req.user.id],
+    );
+
+    const trimmedPhone = phone.trim();
+    const existingPhone = String(existingUser?.phone || "").trim();
+    const phoneChanged = trimmedPhone !== existingPhone;
+
+    const [updateResult] = await db.query("UPDATE users SET phone=? WHERE id=?", [
+      trimmedPhone,
       req.user.id,
     ]);
+
+    if (existingUser && phoneChanged && updateResult?.affectedRows === 1) {
+      req.auditRecord = {
+        id: req.user.id,
+        old: { phone_configured: Boolean(existingPhone) },
+        new: {
+          phone_changed: true,
+          phone_configured: Boolean(trimmedPhone),
+          changed_fields: ["phone"],
+        },
+      };
+    }
+
     res.json({ message: "Phone number updated successfully." });
   } catch (err) {
     console.error("[profile/phone]", err);

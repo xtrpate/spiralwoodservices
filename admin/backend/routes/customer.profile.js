@@ -96,6 +96,7 @@ router.put(
   "/phone",
   authenticate,
   requireCustomer,
+  logAction("update_customer_phone", "users"),
   profileController.updatePhone,
 );
 
