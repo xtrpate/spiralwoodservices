@@ -363,6 +363,19 @@ exports.createOrder = async (req, res) => {
 
     await conn.commit();
 
+    req.auditRecord = {
+      id: orderId,
+      old: null,
+      new: {
+        order_created: true,
+        type: "walkin",
+        order_type: "standard",
+        item_count: items.length,
+        payment_status: initialPaymentStatus,
+        payment_method: normalizedPaymentMethod,
+      },
+    };
+
     res.json({
       message: "Order created successfully",
       order_id: orderId,

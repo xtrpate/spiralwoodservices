@@ -6,6 +6,8 @@ const {
   requireCashierOrAdmin,
 } = require("../middleware/auth");
 
+const { logAction } = require("../middleware/auditLog");
+
 const posOrderController = require("../controllers/staff/pos.orders");
 
 const posAccess = [authenticate, requireCashierOrAdmin];
@@ -15,7 +17,12 @@ const posAccess = [authenticate, requireCashierOrAdmin];
 ══════════════════════════════════════════════════════════════ */
 
 router.get("/", posAccess, posOrderController.getOrders);
-router.post("/", posAccess, posOrderController.createOrder);
+router.post(
+  "/",
+  posAccess,
+  logAction("create_pos_sale", "orders"),
+  posOrderController.createOrder,
+);
 router.get("/:id", posAccess, posOrderController.getOrderById);
 
 module.exports = router;
