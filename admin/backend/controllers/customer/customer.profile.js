@@ -408,7 +408,7 @@ exports.verifyPasswordChange = async (req, res) => {
   try {
     // ── FIXED: Switched to .query ──
     const [rows] = await db.query(
-      "SELECT otp_code, otp_expires FROM users WHERE id=?",
+      "SELECT password, otp_code, otp_expires FROM users WHERE id=?",
       [req.user.id],
     );
     const u = rows[0];
@@ -416,6 +416,13 @@ exports.verifyPasswordChange = async (req, res) => {
       return res.status(400).json({ message: "Invalid OTP." });
     if (new Date(u.otp_expires) < new Date())
       return res.status(400).json({ message: "OTP has expired." });
+
+    const sameAsCurrent = await bcrypt.compare(new_password, u.password);
+    if (sameAsCurrent) {
+      return res.status(400).json({
+        message: "New password must be different from your current password.",
+      });
+    }
 
     const hashed = await bcrypt.hash(new_password, 12);
     // ── FIXED: Switched to .query ──
