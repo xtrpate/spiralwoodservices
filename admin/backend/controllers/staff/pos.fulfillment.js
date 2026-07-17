@@ -760,6 +760,24 @@ exports.updateDeliveryStatus = async (req, res) => {
       }
     }
 
+    if (isCompletingDeliveryNow && order.customer_id) {
+      try {
+        await conn.query(
+          `INSERT INTO notifications (user_id, type, title, message, is_read, channel, sent_at, created_at)
+           VALUES (?, 'delivery_update', 'Your Order Has Arrived', ?, 0, 'system', NOW(), NOW())`,
+          [
+            order.customer_id,
+            `Your order ${order.order_number || `#${existing.order_id}`} has been delivered. Thank you for choosing Spiral Wood Services.`,
+          ],
+        );
+      } catch (customerNotificationError) {
+        console.error(
+          "[updateDeliveryStatus customer notification]",
+          customerNotificationError,
+        );
+      }
+    }
+
     if (existing.assigned_by && shouldRecordDeliveryCollection) {
       await conn.query(
         // 👉 ADDED is_read and created_at
