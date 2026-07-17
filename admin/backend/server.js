@@ -112,6 +112,10 @@ app.use(
 );
 app.use("/api/customer/warranty", require("./routes/customer.warranty"));
 app.use("/api/customer/custom-orders", customerCustomOrdersRoutes);
+app.use(
+  "/api/customer/notifications",
+  require("./routes/customer.notifications"),
+);
 
 app.use("/api/pos/reports", require("./routes/pos.reports"));
 app.use("/api/pos/dashboard", require("./routes/pos.dashboard"));

@@ -475,7 +475,7 @@ exports.updateDeliveryStatus = async (req, res) => {
     }
 
     const [[order]] = await conn.query(
-      `SELECT id, order_number, total, status, payment_status
+      `SELECT id, order_number, total, status, payment_status, customer_id
        FROM orders
        WHERE id = ?
        LIMIT 1
@@ -720,11 +720,12 @@ exports.updateDeliveryStatus = async (req, res) => {
       );
     }
 
+    const isFailureUpdate = requestedStatus === "failed";
+
     if (
       existing.assigned_by &&
       Number(existing.assigned_by) !== Number(req.user.id)
     ) {
-      const isFailureUpdate = requestedStatus === "failed";
       await conn.query(
         // 👉 ADDED is_read and created_at
         `INSERT INTO notifications (user_id, type, title, message, is_read, channel, sent_at, created_at)
@@ -739,6 +740,24 @@ exports.updateDeliveryStatus = async (req, res) => {
             : `${req.user.name || "Assigned rider"} updated delivery #${deliveryId} to ${requestedStatus.replace(/_/g, " ")}.`,
         ],
       );
+    }
+
+    if (isFailureUpdate && order.customer_id) {
+      try {
+        await conn.query(
+          `INSERT INTO notifications (user_id, type, title, message, is_read, channel, sent_at, created_at)
+           VALUES (?, 'delivery_update', 'Delivery Attempt Unsuccessful', ?, 0, 'system', NOW(), NOW())`,
+          [
+            order.customer_id,
+            `We attempted to deliver your order ${order.order_number || `#${existing.order_id}`} but were unable to complete it. Our team will contact you to arrange another delivery.`,
+          ],
+        );
+      } catch (customerNotificationError) {
+        console.error(
+          "[updateDeliveryStatus customer notification]",
+          customerNotificationError,
+        );
+      }
     }
 
     if (existing.assigned_by && shouldRecordDeliveryCollection) {

@@ -25,6 +25,7 @@ import logoImg from "../assets/logo.png";
 import LandingPage from "./LandingPage";
 import "./customerlayout.css";
 import "./profile.css";
+import CustomerNotificationBell from "../../components/CustomerNotificationBell";
 
 const navItems = [
   { to: "/", icon: Home, label: "Home" },
@@ -707,6 +708,8 @@ export default function CustomerLayout() {
                 {renderCountBadge(cartCount)}
               </span>
             </button>
+
+            {customerUser && <CustomerNotificationBell />}
 
             <div className="cust-account-wrap" ref={accountRef}>
               <button
