@@ -749,6 +749,8 @@ exports.updateDeliveryStatus = async (req, res) => {
     }
 
     const isFailureUpdate = requestedStatus === "failed";
+    const isStartingTransitNow =
+      requestedStatus === "in_transit" && currentStatus === "scheduled";
 
     if (
       existing.assigned_by &&
@@ -778,6 +780,24 @@ exports.updateDeliveryStatus = async (req, res) => {
           [
             order.customer_id,
             `We attempted to deliver your order ${order.order_number || `#${existing.order_id}`} but were unable to complete it. Our team will contact you to arrange another delivery.`,
+          ],
+        );
+      } catch (customerNotificationError) {
+        console.error(
+          "[updateDeliveryStatus customer notification]",
+          customerNotificationError,
+        );
+      }
+    }
+
+    if (isStartingTransitNow && order.customer_id) {
+      try {
+        await conn.query(
+          `INSERT INTO notifications (user_id, type, title, message, is_read, channel, sent_at, created_at)
+           VALUES (?, 'delivery_update', 'Your Delivery Is on the Way', ?, 0, 'system', NOW(), NOW())`,
+          [
+            order.customer_id,
+            `Your order ${order.order_number || `#${existing.order_id}`} is now on the way.`,
           ],
         );
       } catch (customerNotificationError) {
