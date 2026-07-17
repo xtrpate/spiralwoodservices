@@ -70,6 +70,7 @@ router.post(
   authenticate,
   requireCustomer,
   handleAvatarUpload, // 👉 Replace uploadAvatar.single("avatar") with our new wrapper!
+  logAction("update_customer_avatar", "users"),
   profileController.uploadAvatar,
 );
 router.put(

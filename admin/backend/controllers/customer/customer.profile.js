@@ -42,10 +42,23 @@ exports.uploadAvatar = async (req, res) => {
     }
 
     // ── FIXED: Switched to .query ──
-    await db.query("UPDATE users SET profile_photo=? WHERE id=?", [
+    const [updateResult] = await db.query("UPDATE users SET profile_photo=? WHERE id=?", [
       req.file.filename,
       req.user.id,
     ]);
+
+    if (updateResult?.affectedRows === 1) {
+      req.auditRecord = {
+        id: req.user.id,
+        old: { avatar_configured: Boolean(rows[0]?.profile_photo) },
+        new: {
+          avatar_changed: true,
+          avatar_configured: true,
+          changed_fields: ["profile_photo"],
+        },
+      };
+    }
+
     res.json({ profile_photo: req.file.filename });
   } catch (err) {
     console.error("[profile/avatar]", err);
