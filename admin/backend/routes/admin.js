@@ -327,8 +327,18 @@ router.patch(
   logAction("update_order_status", "orders"),
   orders.updateStatus,
 );
-router.post("/orders/:id/accept", adminOnly, orders.accept);
-router.post("/orders/:id/decline", adminOnly, orders.decline);
+router.post(
+  "/orders/:id/accept",
+  adminOnly,
+  logAction("accept_order", "orders"),
+  orders.accept,
+);
+router.post(
+  "/orders/:id/decline",
+  adminOnly,
+  logAction("decline_order", "orders"),
+  orders.decline,
+);
 
 router.post(
   "/orders/:id/verify-payment",

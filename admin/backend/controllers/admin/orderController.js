@@ -1266,10 +1266,25 @@ exports.updateStatus = async (req, res) => {
 
 exports.accept = async (req, res) => {
   try {
-    await pool.query(
+    const orderId = parseInt(req.params.id);
+
+    const [result] = await pool.query(
       "UPDATE orders SET status = 'confirmed' WHERE id = ? AND status = 'pending'",
-      [parseInt(req.params.id)],
+      [orderId],
     );
+
+    if (result.affectedRows === 1) {
+      req.auditRecord = {
+        id: orderId,
+        old: { status: "pending" },
+        new: {
+          status: "confirmed",
+          order_accepted: true,
+          changed_fields: ["status"],
+        },
+      };
+    }
+
     res.json({ message: "Order accepted." });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -1296,6 +1311,20 @@ exports.decline = async (req, res) => {
     }
 
     await conn.commit();
+
+    if (declineResult.affectedRows === 1) {
+      req.auditRecord = {
+        id: orderId,
+        old: { status: "pending" },
+        new: {
+          status: "cancelled",
+          order_declined: true,
+          decline_reason_provided: Boolean(String(reason || "").trim()),
+          changed_fields: ["status", "cancellation_reason", "cancelled_at"],
+        },
+      };
+    }
+
     res.json({ message: "Order declined." });
   } catch (err) {
     await conn.rollback();
