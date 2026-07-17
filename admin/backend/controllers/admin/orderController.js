@@ -1228,6 +1228,24 @@ exports.updateStatus = async (req, res) => {
       );
     }
 
+    if (nextStatus === "completed" && order.customer_id) {
+      try {
+        await conn.query(
+          `INSERT INTO notifications (user_id, type, title, message, is_read, channel, sent_at, created_at)
+           VALUES (?, 'order_update', 'Order Completed', ?, 0, 'system', NOW(), NOW())`,
+          [
+            order.customer_id,
+            `Your order ${order.order_number || `#${order.id}`} has been completed. Thank you for choosing Spiral Wood Services.`,
+          ],
+        );
+      } catch (customerNotificationError) {
+        console.error(
+          "[orderController.updateStatus customer notification]",
+          customerNotificationError,
+        );
+      }
+    }
+
     await conn.commit();
 
     req.auditRecord = {
