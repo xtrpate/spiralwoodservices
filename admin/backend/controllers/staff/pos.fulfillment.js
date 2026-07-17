@@ -751,6 +751,8 @@ exports.updateDeliveryStatus = async (req, res) => {
     const isFailureUpdate = requestedStatus === "failed";
     const isStartingTransitNow =
       requestedStatus === "in_transit" && currentStatus === "scheduled";
+    const isUndoingDeliveryNow =
+      requestedStatus === "in_transit" && currentStatus === "delivered";
 
     if (
       existing.assigned_by &&
@@ -816,6 +818,24 @@ exports.updateDeliveryStatus = async (req, res) => {
           [
             order.customer_id,
             `Your order ${order.order_number || `#${existing.order_id}`} has been delivered. Thank you for choosing Spiral Wood Services.`,
+          ],
+        );
+      } catch (customerNotificationError) {
+        console.error(
+          "[updateDeliveryStatus customer notification]",
+          customerNotificationError,
+        );
+      }
+    }
+
+    if (isUndoingDeliveryNow && order.customer_id) {
+      try {
+        await conn.query(
+          `INSERT INTO notifications (user_id, type, title, message, is_read, channel, sent_at, created_at)
+           VALUES (?, 'delivery_update', 'Delivery Status Corrected', ?, 0, 'system', NOW(), NOW())`,
+          [
+            order.customer_id,
+            `The delivery status for your order ${order.order_number || `#${existing.order_id}`} was corrected. Our team is still completing your delivery.`,
           ],
         );
       } catch (customerNotificationError) {
