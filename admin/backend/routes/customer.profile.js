@@ -5,6 +5,7 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 const { authenticate, requireCustomer } = require("../middleware/auth");
+const { logAction } = require("../middleware/auditLog");
 const profileController = require("../controllers/customer/customer.profile");
 const { verifyFileSignature } = require("../utils/verifyFileSignature");
 
@@ -75,6 +76,7 @@ router.put(
   "/basic",
   authenticate,
   requireCustomer,
+  logAction("update_customer_profile", "users"),
   profileController.updateBasic,
 );
 router.post(

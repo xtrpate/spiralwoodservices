@@ -118,22 +118,82 @@ exports.updateBasic = async (req, res) => {
   }
 
   try {
+    const [[existingUser]] = await db.query(
+      "SELECT name, address, address_lat, address_lng FROM users WHERE id = ?",
+      [req.user.id],
+    );
+
+    const normalizeCoord = (value) => {
+      if (value === null || value === undefined || value === "") return null;
+      const num = Number(value);
+      return Number.isFinite(num) ? num : null;
+    };
+
+    const existingLat = existingUser
+      ? normalizeCoord(existingUser.address_lat)
+      : null;
+    const existingLng = existingUser
+      ? normalizeCoord(existingUser.address_lng)
+      : null;
+
+    let updateResult;
+
     if (touchesPin) {
       // Request explicitly included lat/lng (either clearing or setting
       // a pin) — update all four columns.
-      await db.query(
+      [updateResult] = await db.query(
         "UPDATE users SET name=?, address=?, address_lat=?, address_lng=? WHERE id=?",
         [name.trim(), address?.trim() || "", cleanLat, cleanLng, req.user.id],
       );
     } else {
       // Request didn't mention lat/lng at all — only touch name/address,
       // leaving any previously saved pin exactly as it was.
-      await db.query("UPDATE users SET name=?, address=? WHERE id=?", [
+      [updateResult] = await db.query("UPDATE users SET name=?, address=? WHERE id=?", [
         name.trim(),
         address?.trim() || "",
         req.user.id,
       ]);
     }
+
+    if (existingUser && updateResult?.affectedRows === 1) {
+      const trimmedName = name.trim();
+      const trimmedAddress = address?.trim() || "";
+
+      const previousCoordinatesConfigured =
+        existingLat !== null && existingLng !== null;
+
+      const nextCoordinatesConfigured = touchesPin
+        ? cleanLat !== null && cleanLng !== null
+        : previousCoordinatesConfigured;
+
+      const changedFields = [
+        ...(trimmedName !== (existingUser.name || "") ? ["name"] : []),
+        ...(trimmedAddress !== (existingUser.address || "")
+          ? ["address"]
+          : []),
+        ...(touchesPin &&
+        (cleanLat !== existingLat || cleanLng !== existingLng)
+          ? ["coordinates"]
+          : []),
+      ];
+
+      if (changedFields.length) {
+        req.auditRecord = {
+          id: req.user.id,
+          old: {
+            address_configured: Boolean(existingUser.address?.trim()),
+            coordinates_configured: previousCoordinatesConfigured,
+          },
+          new: {
+            name_changed: changedFields.includes("name"),
+            address_configured: Boolean(trimmedAddress),
+            coordinates_configured: nextCoordinatesConfigured,
+            changed_fields: changedFields,
+          },
+        };
+      }
+    }
+
     res.json({ message: "Profile updated." });
   } catch (err) {
     console.error("[profile/basic]", err);
