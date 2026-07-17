@@ -242,6 +242,7 @@ exports.createDelivery = async (req, res) => {
       SELECT
         o.id,
         o.order_number,
+        o.customer_id,
         o.status,
         o.payment_status,
         o.delivery_address,
@@ -304,6 +305,12 @@ exports.createDelivery = async (req, res) => {
     const finalNotes = finalNotesParts.length
       ? finalNotesParts.join("\n")
       : null;
+
+    const [[priorFailedAttempt]] = await db.query(
+      `SELECT id FROM deliveries WHERE order_id = ? AND status = 'failed' LIMIT 1`,
+      [orderId],
+    );
+    const isRedeliverySchedule = Boolean(priorFailedAttempt);
 
     const [result] = await db.query(
       `
@@ -395,6 +402,27 @@ exports.createDelivery = async (req, res) => {
       );
     } catch (notificationError) {
       console.error("[createDelivery rider notification]", notificationError);
+    }
+
+    if (order.customer_id) {
+      try {
+        await db.query(
+          `INSERT INTO notifications (user_id, type, title, message, is_read, channel, sent_at, created_at)
+           VALUES (?, 'delivery_update', ?, ?, 0, 'system', NOW(), NOW())`,
+          [
+            order.customer_id,
+            isRedeliverySchedule ? "Redelivery Scheduled" : "Delivery Scheduled",
+            isRedeliverySchedule
+              ? `A new delivery schedule for your order ${order.order_number} has been arranged for ${scheduledDate}.`
+              : `Your order ${order.order_number} has been scheduled for delivery on ${scheduledDate}.`,
+          ],
+        );
+      } catch (customerNotificationError) {
+        console.error(
+          "[createDelivery customer notification]",
+          customerNotificationError,
+        );
+      }
     }
 
     res.status(201).json({
