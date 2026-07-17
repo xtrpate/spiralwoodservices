@@ -264,7 +264,7 @@ exports.verifyEmailChange = async (req, res) => {
   try {
     // ── FIXED: Switched to .query ──
     const [rows] = await db.query(
-      "SELECT otp_code, otp_expires, pending_email FROM users WHERE id=?",
+      "SELECT email, otp_code, otp_expires, pending_email FROM users WHERE id=?",
       [req.user.id],
     );
     const u = rows[0];
@@ -273,13 +273,28 @@ exports.verifyEmailChange = async (req, res) => {
     if (new Date(u.otp_expires) < new Date())
       return res.status(400).json({ message: "OTP has expired." });
 
+    const emailChanged = u.pending_email !== u.email;
+
     // ── FIXED: Switched to .query ──
-    await db.query(
+    const [updateResult] = await db.query(
       `UPDATE users
        SET email=?, pending_email=NULL, otp_code=NULL, otp_expires=NULL
        WHERE id=?`,
       [u.pending_email, req.user.id],
     );
+
+    if (emailChanged && updateResult?.affectedRows === 1) {
+      req.auditRecord = {
+        id: req.user.id,
+        old: { email_configured: true },
+        new: {
+          email_changed: true,
+          email_configured: true,
+          changed_fields: ["email"],
+        },
+      };
+    }
+
     res.json({ message: "Email updated successfully." });
   } catch (err) {
     console.error("[profile/verify-email-change]", err);

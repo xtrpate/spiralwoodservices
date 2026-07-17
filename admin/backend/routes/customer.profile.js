@@ -89,6 +89,7 @@ router.post(
   "/verify-email-change",
   authenticate,
   requireCustomer,
+  logAction("update_customer_email", "users"),
   profileController.verifyEmailChange,
 );
 
