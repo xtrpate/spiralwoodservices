@@ -209,6 +209,19 @@ exports.requestEmailChange = async (req, res) => {
   if (!new_email?.trim())
     return res.status(400).json({ message: "New email is required." });
 
+  const normalizedCurrentEmail = String(req.user.email || "")
+    .trim()
+    .toLowerCase();
+  const normalizedRequestedEmail = String(new_email || "")
+    .trim()
+    .toLowerCase();
+
+  if (normalizedRequestedEmail === normalizedCurrentEmail) {
+    return res.status(400).json({
+      message: "New email must be different from your current email.",
+    });
+  }
+
   /* Check if email already taken */
   // ── FIXED: Switched to .query ──
   const [exists] = await db.query(
