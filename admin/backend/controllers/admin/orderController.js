@@ -1344,6 +1344,8 @@ exports.verifyPayment = async (req, res) => {
     const [[order]] = await conn.query(
       `SELECT
           id,
+          customer_id,
+          order_number,
           order_type,
           status,
           total,
@@ -1648,6 +1650,29 @@ exports.verifyPayment = async (req, res) => {
        WHERE id = ?`,
       [nextPaymentStatus, order.id],
     );
+
+    if (order.customer_id) {
+      try {
+        await conn.query(
+          `INSERT INTO notifications (user_id, type, title, message, is_read, channel, sent_at, created_at)
+           VALUES (?, 'payment_update', ?, ?, 0, 'system', NOW(), NOW())`,
+          [
+            order.customer_id,
+            normalizedAction === "verified"
+              ? "Payment Verified"
+              : "Payment Could Not Be Verified",
+            normalizedAction === "verified"
+              ? `A payment for your order ${order.order_number || `#${order.id}`} has been verified.`
+              : `A payment for your order ${order.order_number || `#${order.id}`} could not be verified. Please review your order or contact our team for assistance.`,
+          ],
+        );
+      } catch (customerNotificationError) {
+        console.error(
+          "[orderController.verifyPayment customer notification]",
+          customerNotificationError,
+        );
+      }
+    }
 
     await conn.commit();
     transactionActive = false;
