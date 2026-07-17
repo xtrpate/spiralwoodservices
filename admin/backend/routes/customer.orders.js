@@ -8,6 +8,7 @@ const fs = require("fs");
 
 // Your existing auth middlewares
 const { authenticate, requireCustomer } = require("../middleware/auth");
+const { logAction } = require("../middleware/auditLog");
 const orderController = require("../controllers/customer/customer.orders");
 
 // 👉 ADDED: We must import the new cart controller so the routes can use it!
@@ -95,6 +96,7 @@ router.put(
   "/:id/confirm",
   authenticate,
   requireCustomer,
+  logAction("confirm_order_receipt", "orders"),
   orderController.confirmOrder,
 );
 router.put(

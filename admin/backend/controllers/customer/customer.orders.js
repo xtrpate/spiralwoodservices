@@ -561,6 +561,12 @@ exports.confirmOrder = async (req, res) => {
       });
     }
 
+    req.auditRecord = {
+      id: order.id,
+      old: { status: "delivered" },
+      new: { status: "completed" },
+    };
+
     res.json({ message: "Order confirmed successfully." });
   } catch (err) {
     console.error("[customer.orders/:id/confirm]", err);
