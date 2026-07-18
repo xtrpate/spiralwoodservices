@@ -4,9 +4,7 @@ import toast from "react-hot-toast";
 
 const API_BASE_URL =
   process.env.REACT_APP_API_URL ||
-  (window.location.hostname === "localhost"
-    ? "http://localhost:5000/api"
-    : "https://spiralwoodservices-production.up.railway.app/api");
+  "https://spiralwoodservices-production.up.railway.app/api";
 
 export const buildAssetUrl = (value) => {
   const raw = String(value || "").trim();
