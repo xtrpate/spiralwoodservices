@@ -1670,19 +1670,18 @@ exports.saveEstimation = async (req, res) => {
     }
 
     // ── Concurrency protection ─────────────────────────────────────────
-    // If a canonical order is linked, re-resolve it under FOR UPDATE so
-    // the final eligibility decision is made against fresh, locked data
-    // — not the snapshot read a moment earlier, which a concurrent
-    // request (a payment verification, a contract generation) could have
-    // changed in between. Blueprint-only context (no linked order, e.g.
-    // templates) has no order row to lock and keeps the original,
-    // unlocked classification.
+    // Re-resolve under a common lock (order+blueprint if linked, else the
+    // blueprint row alone) with current (FOR UPDATE) reads of everything
+    // that gates this write, so nothing here uses a pre-lock snapshot.
     let lifecycle = initialLifecycle;
 
     if (initialLifecycle.order) {
       lifecycle = await resolveLifecycleByOrder(conn, {
         orderId: initialLifecycle.order.id,
         lockOrder: true,
+        lockBlueprint: true,
+        lockEstimation: true,
+        lockContext: true,
       });
 
       if (lifecycle.reason === "MULTIPLE_ORDER_OWNERS") {
@@ -1704,6 +1703,46 @@ exports.saveEstimation = async (req, res) => {
           integrity_reason: lifecycle.reason,
         });
       }
+    } else {
+      lifecycle = await resolveLifecycleByBlueprint(conn, {
+        blueprintId,
+        lockBlueprint: true,
+        lockEstimation: true,
+      });
+
+      if (lifecycle.reason === "MULTIPLE_ORDER_OWNERS") {
+        await conn.rollback();
+        return res.status(409).json({
+          message: lifecycle.message,
+          integrity_reason: lifecycle.reason,
+          conflicting_order_ids: lifecycle.conflicting_order_ids,
+        });
+      }
+
+      if (
+        lifecycle.status === "BLOCKED" &&
+        lifecycle.reason !== "STALE_ESTIMATION"
+      ) {
+        await conn.rollback();
+        return res.status(409).json({
+          message: lifecycle.message,
+          integrity_reason: lifecycle.reason,
+        });
+      }
+    }
+
+    // Re-checked against the just-locked blueprint row, not the earlier
+    // unlocked read at the top of this function.
+    if (
+      lifecycle.blueprint &&
+      (Number(lifecycle.blueprint.is_deleted) === 1 ||
+        String(lifecycle.blueprint.stage || "").toLowerCase() === "archived")
+    ) {
+      await conn.rollback();
+      return res.status(409).json({
+        message: "Cannot save estimation for archived blueprint.",
+        integrity_reason: "BLUEPRINT_ARCHIVED",
+      });
     }
 
     // STALE_ESTIMATION blocks unless the (now-locked, re-checked)
@@ -1884,6 +1923,18 @@ exports.saveEstimation = async (req, res) => {
 
     await conn.commit();
 
+    req.auditRecord = {
+      id: insertResult.insertId,
+      old: null,
+      new: {
+        blueprint_id: blueprintId,
+        estimation_created: true,
+        version,
+        status: "draft",
+        changed_fields: ["estimation"],
+      },
+    };
+
     res.status(201).json({
       message: "Estimation saved.",
       id: insertResult.insertId,
@@ -1923,15 +1974,9 @@ exports.approveEstimation = async (req, res) => {
     const blueprintId = Number(req.params.id) || 0;
 
     const [[bp]] = await conn.query(
-      `SELECT
-          b.id,
-          b.is_deleted,
-          o.id AS order_id,
-          o.order_number,
-          o.customer_id
-       FROM blueprints b
-       LEFT JOIN orders o ON o.blueprint_id = b.id
-       WHERE b.id = ?
+      `SELECT id, is_deleted
+       FROM blueprints
+       WHERE id = ?
        LIMIT 1`,
       [blueprintId],
     );
@@ -1948,21 +1993,60 @@ exports.approveEstimation = async (req, res) => {
       });
     }
 
-    // Resolved through the lifecycle service instead of a raw
-    // blueprint_id-only query — a stale ghost estimation can no longer be
-    // sent, and can no longer trigger the old "already approved by the
-    // customer" trap, since a stale row is never returned as .estimation.
-    const lifecycle = await resolveLifecycleByBlueprint(conn, { blueprintId });
+    const initialLifecycle = await resolveLifecycleByBlueprint(conn, {
+      blueprintId,
+    });
 
-    if (lifecycle.status === "BLOCKED") {
+    if (initialLifecycle.status === "BLOCKED") {
       await conn.rollback();
       return res.status(409).json({
-        message: lifecycle.message,
-        integrity_reason: lifecycle.reason,
-        conflicting_order_ids: lifecycle.conflicting_order_ids,
+        message: initialLifecycle.message,
+        integrity_reason: initialLifecycle.reason,
+        conflicting_order_ids: initialLifecycle.conflicting_order_ids,
         can_create_replacement_estimation:
-          lifecycle.can_create_replacement_estimation,
-        recovery_block_reason: lifecycle.recovery_block_reason,
+          initialLifecycle.can_create_replacement_estimation,
+        recovery_block_reason: initialLifecycle.recovery_block_reason,
+      });
+    }
+
+    // Common order+blueprint lock + current (FOR UPDATE) reads of the
+    // estimation and contract/payment context — see
+    // blueprintLifecycleService.js header comment for why each is needed.
+    let lifecycle = initialLifecycle;
+
+    if (initialLifecycle.order) {
+      lifecycle = await resolveLifecycleByOrder(conn, {
+        orderId: initialLifecycle.order.id,
+        lockOrder: true,
+        lockBlueprint: true,
+        lockEstimation: true,
+        lockContext: true,
+      });
+
+      if (lifecycle.status === "BLOCKED") {
+        await conn.rollback();
+        return res.status(409).json({
+          message: lifecycle.message,
+          integrity_reason: lifecycle.reason,
+          conflicting_order_ids: lifecycle.conflicting_order_ids,
+          can_create_replacement_estimation:
+            lifecycle.can_create_replacement_estimation,
+          recovery_block_reason: lifecycle.recovery_block_reason,
+        });
+      }
+    }
+
+    // Re-checked against the just-locked blueprint row, not the earlier
+    // unlocked read at the top of this function.
+    if (
+      lifecycle.blueprint &&
+      (Number(lifecycle.blueprint.is_deleted) === 1 ||
+        String(lifecycle.blueprint.stage || "").toLowerCase() === "archived")
+    ) {
+      await conn.rollback();
+      return res.status(409).json({
+        message: "Cannot send estimation for archived blueprint.",
+        integrity_reason: "BLUEPRINT_ARCHIVED",
       });
     }
 
@@ -2033,15 +2117,85 @@ exports.approveEstimation = async (req, res) => {
       });
     }
 
-    await conn.query(
+    if (currentStatus === "rejected") {
+      await conn.rollback();
+      return res.status(409).json({
+        message:
+          "This quotation was rejected by the customer and needs a revised estimation before it can be sent again.",
+        integrity_reason: "ESTIMATION_REJECTED",
+      });
+    }
+
+    if (currentStatus !== "draft") {
+      await conn.rollback();
+      return res.status(409).json({
+        message:
+          "Quotation state changed before it could be sent. Please refresh and try again.",
+        integrity_reason: "ESTIMATION_STATE_CHANGED",
+      });
+    }
+
+    // affectedRows is defense-in-depth; the lockEstimation read above
+    // already row-locks this exact record.
+    const [updateResult] = await conn.query(
       `UPDATE estimations
        SET status = 'sent',
            approved_by = NULL,
            approved_at = NULL,
            updated_at = NOW()
-       WHERE id = ?`,
+       WHERE id = ?
+         AND status = 'draft'`,
       [parseInt(latestEstimation.id)],
     );
+
+    if (updateResult.affectedRows === 0) {
+      const [[freshEstimation]] = await conn.query(
+        `SELECT *
+         FROM estimations
+         WHERE id = ?
+         LIMIT 1
+         FOR UPDATE`,
+        [parseInt(latestEstimation.id)],
+      );
+
+      await conn.rollback();
+
+      if (!freshEstimation) {
+        return res.status(404).json({ message: "No estimation found to send." });
+      }
+
+      const freshStatus = String(freshEstimation.status || "")
+        .trim()
+        .toLowerCase();
+
+      if (freshStatus === "sent") {
+        return res.json({
+          message: "Quotation is already sent to the customer.",
+          estimation: freshEstimation,
+        });
+      }
+
+      if (freshStatus === "approved") {
+        return res.json({
+          message: "Quotation is already approved by the customer.",
+          estimation: freshEstimation,
+        });
+      }
+
+      if (freshStatus === "rejected") {
+        return res.status(409).json({
+          message:
+            "This quotation was rejected by the customer and needs a revised estimation before it can be sent again.",
+          integrity_reason: "ESTIMATION_REJECTED",
+        });
+      }
+
+      return res.status(409).json({
+        message:
+          "Quotation state changed before it could be sent. Please refresh and try again.",
+        integrity_reason: "ESTIMATION_STATE_CHANGED",
+      });
+    }
 
     await conn.query(
       `UPDATE blueprints
@@ -2050,17 +2204,17 @@ exports.approveEstimation = async (req, res) => {
       [blueprintId],
     );
 
-    if (Number(bp.customer_id) > 0) {
+    if (Number(order.customer_id) > 0) {
       try {
         await conn.query(
           `INSERT INTO notifications
             (user_id, type, title, message, is_read, channel, sent_at, created_at)
            VALUES (?, ?, ?, ?, 0, 'system', NOW(), NOW())`,
           [
-            parseInt(bp.customer_id),
+            parseInt(order.customer_id),
             "estimation_sent",
             "Quotation Ready for Review",
-            `Your quotation for ${bp.order_number || `order #${bp.order_id || blueprintId}`} is ready. Please review it from your custom request page.`,
+            `Your quotation for ${order.order_number || `order #${order.id}`} is ready. Please review it from your custom request page.`,
           ],
         );
       } catch (notifyErr) {
@@ -2077,6 +2231,19 @@ exports.approveEstimation = async (req, res) => {
     );
 
     await conn.commit();
+
+    req.auditRecord = {
+      id: parseInt(latestEstimation.id),
+      old: { status: currentStatus },
+      new: {
+        status: "sent",
+        changed_fields: [
+          "status",
+          ...(latestEstimation.approved_by != null ? ["approved_by"] : []),
+          ...(latestEstimation.approved_at != null ? ["approved_at"] : []),
+        ],
+      },
+    };
 
     return res.json({
       message: "Quotation sent to customer for approval.",

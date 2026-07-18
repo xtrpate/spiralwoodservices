@@ -21,18 +21,28 @@
 //     never commits/rolls back — that stays the caller's responsibility.
 //   - Only resolveLifecycleByOrder accepts `lockOrder`/`lockBlueprint: true`
 //     to add `FOR UPDATE` to the relevant SELECT (only meaningful inside an
-//     active transaction). resolveLifecycleByBlueprint does NOT accept or
-//     apply either option — it is a discovery/read resolution entry point
-//     for routes that only have a blueprintId (no orderId) available, such
-//     as blueprintController's GET/POST /blueprints/:id/estimation
-//     endpoints. It deliberately does not lock anything itself, and it does
-//     not introduce blueprint-first locking, to avoid conflicting with the
-//     order-first lock order used everywhere a write actually happens.
+//     active transaction). resolveLifecycleByBlueprint is primarily a
+//     discovery/read entry point for routes that only have a blueprintId
+//     (no orderId) available, such as blueprintController's GET/POST
+//     /blueprints/:id/estimation endpoints, and by default locks nothing.
 //     Write callers that resolve through resolveLifecycleByBlueprint and
 //     find exactly one linked order must re-resolve that order through
 //     resolveLifecycleByOrder with lockOrder (and lockBlueprint if needed)
 //     inside their own transaction before making any write decision — see
 //     blueprintController.saveEstimation for the reference pattern.
+//     Blueprint-only (no linked order) write callers instead re-resolve
+//     through resolveLifecycleByBlueprint itself with lockBlueprint: true.
+//     Lock order is always order-then-blueprint, never the reverse: if a
+//     lockBlueprint:true call discovers a newly-linked order, it returns
+//     BLUEPRINT_ORDER_LINK_RACE instead of escalating to lockOrder while
+//     still holding the blueprint lock.
+//   - `lockEstimation: true` forces a current (FOR UPDATE) read of the
+//     resolved estimation instead of an ordinary snapshot read. Accepted
+//     by both resolveLifecycleByOrder and resolveLifecycleByBlueprint.
+//     `lockContext: true` (resolveLifecycleByOrder only) does the same for
+//     the contract/payment-transaction reads that also gate writes.
+//     `lockBlueprint: true` on resolveLifecycleByBlueprint locks the
+//     blueprint row itself for blueprint-only (no linked order) callers.
 //   - `status: 'OK'` does NOT by itself mean a write is safe. Reasons
 //     'NO_ESTIMATION' and 'NO_BLUEPRINT_LINKED' are also 'OK' (they are
 //     normal, non-corruption states), but each endpoint must additionally
@@ -47,6 +57,7 @@ const REASON_CODES = Object.freeze({
   BLUEPRINT_NOT_FOUND: 'BLUEPRINT_NOT_FOUND',
   ORDER_BLUEPRINT_MISMATCH: 'ORDER_BLUEPRINT_MISMATCH',
   MULTIPLE_ORDER_OWNERS: 'MULTIPLE_ORDER_OWNERS',
+  BLUEPRINT_ORDER_LINK_RACE: 'BLUEPRINT_ORDER_LINK_RACE',
   NO_BLUEPRINT_LINKED: 'NO_BLUEPRINT_LINKED',
   NO_ESTIMATION: 'NO_ESTIMATION',
   STALE_ESTIMATION: 'STALE_ESTIMATION',
@@ -164,7 +175,7 @@ function computeOrderRecoveryEligibility({
 // first (never "latest then test"), then separately checks whether ANY
 // estimation exists at all, purely to power the integrity warning and the
 // recovery-eligibility computation.
-async function resolveEstimationAndContext(conn, { order, blueprint }) {
+async function resolveEstimationAndContext(conn, { order, blueprint, lockEstimation = false, lockContext = false }) {
   const [validRows] = await conn.query(
     `SELECT *
      FROM estimations
@@ -172,19 +183,19 @@ async function resolveEstimationAndContext(conn, { order, blueprint }) {
        AND created_at >= ?
        AND created_at >= ?
      ORDER BY version DESC, id DESC
-     LIMIT 1`,
+     LIMIT 1` + (lockEstimation ? ' FOR UPDATE' : ''),
     [blueprint.id, blueprint.created_at, order.created_at],
   );
   const estimation = validRows[0] || null;
 
   const [contractRows] = await conn.query(
-    `SELECT * FROM contracts WHERE order_id = ? LIMIT 1`,
+    `SELECT * FROM contracts WHERE order_id = ? LIMIT 1` + (lockContext ? ' FOR UPDATE' : ''),
     [order.id],
   );
   const contract = contractRows[0] || null;
 
   const [paymentRows] = await conn.query(
-    `SELECT status, amount FROM payment_transactions WHERE order_id = ?`,
+    `SELECT status, amount FROM payment_transactions WHERE order_id = ?` + (lockContext ? ' FOR UPDATE' : ''),
     [order.id],
   );
   const verifiedPaymentTotal = roundMoney(
@@ -286,6 +297,8 @@ async function resolveLifecycleByOrder(conn, options = {}) {
     requestedBlueprintId = null,
     lockOrder = false,
     lockBlueprint = false,
+    lockEstimation = false,
+    lockContext = false,
   } = options;
 
   const id = Number(orderId) || 0;
@@ -374,7 +387,7 @@ async function resolveLifecycleByOrder(conn, options = {}) {
     );
   }
 
-  return resolveEstimationAndContext(conn, { order, blueprint });
+  return resolveEstimationAndContext(conn, { order, blueprint, lockEstimation, lockContext });
 }
 
 // ── Blueprint-scoped resolver ───────────────────────────────────────────────
@@ -391,6 +404,7 @@ async function resolveLifecycleByOrder(conn, options = {}) {
 //                        estimation allowed, manual review required.
 async function resolveLifecycleByBlueprint(conn, options = {}) {
   const blueprintId = Number(options.blueprintId) || 0;
+  const { lockBlueprint = false, lockEstimation = false } = options;
 
   if (!blueprintId) {
     return blockedResult(REASON_CODES.BLUEPRINT_NOT_FOUND, 'Blueprint not found.');
@@ -400,7 +414,7 @@ async function resolveLifecycleByBlueprint(conn, options = {}) {
     `SELECT id, title, stage, is_deleted, created_at, updated_at
      FROM blueprints
      WHERE id = ?
-     LIMIT 1`,
+     LIMIT 1` + (lockBlueprint ? ' FOR UPDATE' : ''),
     [blueprintId],
   );
   const blueprint = bpRows[0] || null;
@@ -426,7 +440,23 @@ async function resolveLifecycleByBlueprint(conn, options = {}) {
   }
 
   if (orderRows.length === 1) {
-    return resolveLifecycleByOrder(conn, { orderId: orderRows[0].id });
+    if (lockBlueprint) {
+      // An order was discovered while holding the blueprint lock. Do NOT
+      // escalate to lockOrder here — that would lock blueprint-then-order,
+      // inverting the repository's order-then-blueprint convention and
+      // risking deadlock. Ask the caller to retry through the order-first
+      // path instead (a fresh call will resolve initialLifecycle.order).
+      return blockedResult(
+        REASON_CODES.BLUEPRINT_ORDER_LINK_RACE,
+        `Blueprint ${blueprint.id} is now linked to order ${orderRows[0].id}. Please retry.`,
+        { blueprint },
+      );
+    }
+
+    return resolveLifecycleByOrder(conn, {
+      orderId: orderRows[0].id,
+      lockEstimation,
+    });
   }
 
   // Branch A: zero linked orders — blueprint-only context.
@@ -436,7 +466,7 @@ async function resolveLifecycleByBlueprint(conn, options = {}) {
      WHERE blueprint_id = ?
        AND created_at >= ?
      ORDER BY version DESC, id DESC
-     LIMIT 1`,
+     LIMIT 1` + (lockEstimation ? ' FOR UPDATE' : ''),
     [blueprint.id, blueprint.created_at],
   );
   const estimation = validRows[0] || null;

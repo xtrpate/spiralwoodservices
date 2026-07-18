@@ -282,11 +282,13 @@ router.get("/blueprints/:id/estimation", adminStaff, blueprints.getEstimation);
 router.post(
   "/blueprints/:id/estimation",
   adminStaff,
+  logAction("create_blueprint_estimation", "estimations"),
   blueprints.saveEstimation,
 );
 router.patch(
   "/blueprints/:id/estimation/approve",
   adminStaff,
+  logAction("send_blueprint_estimation", "estimations"),
   blueprints.approveEstimation,
 );
 
