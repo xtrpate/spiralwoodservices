@@ -4,7 +4,7 @@ import toast from "react-hot-toast";
 
 const API_BASE_URL =
   process.env.REACT_APP_API_URL ||
-  "https://spiralwoodservices-production.up.railway.app";
+  "https://spiralwoodservices-production.up.railway.app/api";
 
 export const buildAssetUrl = (value) => {
   const raw = String(value || "").trim();
